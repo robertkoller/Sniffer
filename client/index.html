@@ -10,16 +10,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script>
-        /**
-         * LOCAL DEVELOPMENT TIP:
-         * To fix the "API Key not valid" error on your local machine:
-         * Replace 'PLACEHOLDER_API_KEY' below with your actual Gemini API Key.
-         */
-        window.process = {
-            env: {
-                API_KEY: 'PLACEHOLDER_API_KEY' 
-            }
-        };
+        // Ensure process.env exists for the SDK
+        window.process = window.process || { env: {} };
     </script>
     <style>
         body {
@@ -96,9 +88,10 @@
   }
 }
 </script>
+<link rel="stylesheet" href="/index.css">
 </head>
 <body>
     <div id="root"></div>
-    <script type="module" src="./index.jsx"></script>
+<script type="module" src="/index.tsx"></script>
 </body>
 </html>

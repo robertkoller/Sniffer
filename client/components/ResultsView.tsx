@@ -10,14 +10,15 @@ interface ResultsViewProps {
 }
 
 const CredibilityBadge: React.FC<{ score: number }> = ({ score }) => {
-  const isHigh = score > 85;
-  const isMed = score > 70;
+  const displayScore = score <= 1 ? Math.round(score * 100) : Math.round(score);
+  const isHigh = displayScore > 85;
+  const isMed = displayScore > 70;
   const colorClass = isHigh ? 'text-emerald-700 bg-emerald-50 border-emerald-100' : isMed ? 'text-amber-700 bg-amber-50 border-amber-100' : 'text-rose-700 bg-rose-50 border-rose-100';
-  
+
   return (
     <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-[10px] font-bold uppercase tracking-widest ${colorClass} transition-all hover:scale-105 cursor-help shadow-sm`}>
       <ShieldCheck className="w-3 h-3" />
-      <span>{score ?? 0}% Trust</span>
+      <span>{displayScore}% Trust</span>
     </div>
   );
 };
@@ -39,8 +40,8 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
   const scoredSellers = sellers.map(seller => {
     const price = getPrice(seller.price);
     const priceScore = isFinite(price) ? 1 - (price / maxPrice) : 0;
-    const trust = Number(seller.credibilityScore ?? 50);
-    const trustScore = trust / 100;
+    const rawTrust = Number(seller.credibilityScore ?? 50);
+    const trustScore = rawTrust <= 1 ? rawTrust : rawTrust / 100;
 
     return {
       ...seller,
@@ -70,7 +71,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
       )}
 
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
-        <button 
+        <button
           onClick={onBack}
           className="inline-flex items-center gap-3 text-amber-900/60 hover:text-amber-900 transition-all group font-bold uppercase text-xs tracking-widest"
         >
@@ -79,12 +80,12 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
           </div>
           <span>Back to Search</span>
         </button>
-        
+
         {bestScoredSeller && (
           <div className="flex items-center gap-4 bg-white border border-amber-100 px-6 py-3 rounded-2xl shadow-sm hover:shadow-md transition-shadow">
             <TrendingDown className="w-5 h-5 text-emerald-500 animate-pulse" />
             <p className="text-sm font-medium text-amber-900/80">
-              Lowest Price found: <span className="font-black text-amber-900 text-lg">{bestScoredSeller.price}</span>
+              Best Price found: <span className="font-black text-amber-900 text-lg">{bestScoredSeller.price}</span>
             </p>
           </div>
         )}
@@ -96,13 +97,13 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
             <div className="absolute -top-10 -right-10 opacity-[0.05] transition-transform duration-1000 group-hover:rotate-45 group-hover:scale-150">
               <Sparkles className="w-64 h-64 text-amber-900" />
             </div>
-            
+
             <div className="relative">
               <span className="inline-block px-4 py-1.5 bg-amber-50 text-amber-700 rounded-full text-[10px] font-black uppercase tracking-[0.2em] mb-6">
                 {data.brand}
               </span>
               <h1 className="serif text-6xl text-amber-900 mb-8 leading-tight">{data.name}</h1>
-              
+
               <div className="space-y-10">
                 <div className="group/item">
                   <h3 className="text-amber-900 font-black text-[11px] uppercase tracking-[0.3em] mb-4 flex items-center gap-2">
@@ -119,7 +120,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
                     <IconAnim><Droplets className="w-4 h-4 text-amber-500" /></IconAnim>
                     Scent Pyramid
                   </h3>
-                  
+
                   <div className="space-y-6">
                     {Object.entries(data.notes || {}).map(([key, notes]) => (
                       <div key={key} className="flex flex-col gap-3 group/note">
@@ -149,7 +150,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
             </p>
             <div className="space-y-3">
               {(data.physicalStores || []).map((store, i) => (
-                <a 
+                <a
                   key={i}
                   href={store.url}
                   target="_blank"
@@ -176,7 +177,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
             </div>
           </div>
 
-          <div className="grid gap-12 overflow-visible">
+          <div className="grid gap-6 overflow-visible">
             {displayedSellers.map((seller, i) => {
               const isBestDeal = seller === bestScoredSeller;
               return (
@@ -186,19 +187,19 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
                       Best Overall Score
                     </div>
                   )}
-                  <a 
+                  <a
                     href={seller.url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className={`group block relative p-1 rounded-[2.5rem] ${isBestDeal ? 'bg-gradient-to-br from-amber-400/20 to-amber-200/20 border-beam' : ''}`}
                   >
-                    <div className={`bg-white p-8 rounded-[2.2rem] border transition-all duration-500 flex flex-col sm:flex-row items-center justify-between gap-6 hover:shadow-2xl relative z-10 ${isBestDeal ? 'border-amber-400 shadow-xl' : 'border-amber-100/50 hover:border-amber-200'}`}>
+                    <div className={`bg-white p-7 rounded-[2.2rem] border transition-all duration-500 flex flex-col sm:flex-row items-center justify-between gap-6 hover:shadow-2xl relative z-10 ${isBestDeal ? 'border-amber-400 shadow-xl' : 'border-amber-100/50 hover:border-amber-200'}`}>
                       <div className="flex items-center gap-6 w-full sm:w-auto">
-                        <div className={`w-16 h-16 rounded-2xl flex items-center justify-center shrink-0 transition-all duration-500 ${isBestDeal ? 'bg-amber-100 text-amber-900 rotate-3' : 'bg-amber-50 text-amber-700 group-hover:rotate-6'}`}>
+                        <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 transition-all duration-500 ${isBestDeal ? 'bg-amber-100 text-amber-900 rotate-3' : 'bg-amber-50 text-amber-700 group-hover:rotate-6'}`}>
                           <ShoppingBag className="w-8 h-8" />
                         </div>
                         <div>
-                          <h4 className="text-2xl font-black text-amber-900 mb-1 leading-tight">{seller.name}</h4>
+                          <h4 className="text-xl font-black text-amber-900 mb-1 leading-tight">{seller.name}</h4>
                           <div className="flex flex-wrap items-center gap-3">
                             <CredibilityBadge score={seller.credibilityScore} />
                             {seller.isTrusted && (
@@ -207,13 +208,13 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
                           </div>
                         </div>
                       </div>
-                      
-                      <div className="flex items-center gap-8 w-full sm:w-auto justify-between sm:justify-end border-t sm:border-t-0 pt-6 sm:pt-0 border-amber-50">
+
+                      <div className="flex items-center gap-8 w-full sm:w-auto justify-between sm:justify-end border-t sm:border-t-0 pt-4 sm:pt-0 border-amber-50">
                         <div className="text-right">
                           <p className="text-[10px] text-amber-400 font-black uppercase tracking-widest mb-1">Price</p>
-                          <p className="text-4xl serif text-amber-900 font-black tracking-tight">{seller.price}</p>
+                          <p className="text-3xl serif text-amber-900 font-black tracking-tight">{seller.price}</p>
                         </div>
-                        <div className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-500 shrink-0 ${isBestDeal ? 'bg-amber-900 text-white group-hover:scale-110 group-hover:rotate-45' : 'bg-amber-50 text-amber-900 hover:bg-amber-100 group-hover:rotate-12'}`}>
+                        <div className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-500 shrink-0 ${isBestDeal ? 'bg-amber-900 text-white group-hover:scale-110 group-hover:rotate-45' : 'bg-amber-50 text-amber-900 hover:bg-amber-100 group-hover:rotate-12'}`}>
                           <ExternalLink className="w-6 h-6" />
                         </div>
                       </div>
@@ -226,7 +227,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
 
           {sortedSellers.length > 4 && (
             <div className="mt-12 flex justify-center">
-              <button 
+              <button
                 onClick={() => setShowAllSellers(!showAllSellers)}
                 className="flex items-center gap-2 px-10 py-5 bg-white border border-amber-200 rounded-[2rem] text-amber-900 font-black text-xs uppercase tracking-[0.2em] hover:bg-amber-50 hover:border-amber-400 transition-all shadow-sm group"
               >

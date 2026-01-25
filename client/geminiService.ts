@@ -16,7 +16,7 @@ export async function searchCologne(query: string): Promise<ScentDetails | null>
       2. REALITY CHECK: If you find search results for generic items (e.g., Shrek toys, Firefighter costumes) but NO clear evidence of a liquid fragrance product with that name, set "exists" to false.
       3. UNCERTAINTY: If you find the product exists but it is extremely rare, a discontinued novelty, or search results are mixed with non-fragrance items, set "isUncertain" to true and provide a "uncertaintyWarning".
       4. HALLUCINATION PREVENTION: Do NOT create a product like "Firefighter for Men" just to satisfy the query. If it doesn't exist in reality, set "exists" to false.
-      5. CREATIVE EXCEPTIONS: Only return "Eau de Colonel" for "chicken" because it is a verified real product.
+      5. Make sure the 100ml (3.4 oz) price is the one used, not any testing amount.
       
       REQUIRED DATA:
       - Scent pyramid (top, middle, base).
