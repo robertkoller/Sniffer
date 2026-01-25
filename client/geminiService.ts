@@ -52,7 +52,7 @@ export async function searchCologne(query: string): Promise<ScentDetails | null>
       
       REQUIRED DATA:
       - Scent pyramid (top, middle, base).
-      - RETAILER LIST: 12-15 retailers. Prioritize direct product pages.
+      - RETAILER LIST: 8 retailers. Prioritize direct product pages. Prioritize having 2 authorized dealers, but then for the remaining 6 prioritize third party sellers and then finally gray market if little third party sellers are found.
       - Exact prices from search snippets.
       - Credibility scores (0-100). Be strict: 90+ for authorized dealers, 70-89 for reputable third-party, below 70 for gray market.`,
       config: {
