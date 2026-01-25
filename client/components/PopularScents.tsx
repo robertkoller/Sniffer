@@ -3,10 +3,30 @@ import React from 'react';
 import { HoverShift } from './MicroInteractions';
 
 const POPULAR_SCENTS = [
-  { id: '1', name: 'Tobacco Vanille', brand: 'Tom Ford', image: 'https://picsum.photos/seed/vanilla/400/500' },
-  { id: '2', name: 'Aventus', brand: 'Creed', image: 'https://picsum.photos/seed/aventus/400/500' },
-  { id: '3', name: 'Sauvage', brand: 'Dior', image: 'https://picsum.photos/seed/sauvage/400/500' },
-  { id: '4', name: 'Baccarat Rouge 540', brand: 'MFK', image: 'https://picsum.photos/seed/mfk/400/500' },
+  { 
+    id: '1', 
+    name: 'Tobacco Vanille', 
+    brand: 'Tom Ford', 
+    image: '/images/tobacco-vanille.jpg' 
+  },
+  { 
+    id: '2', 
+    name: 'Aventus', 
+    brand: 'Creed', 
+    image: '/images/aventus.jpg' 
+  },
+  { 
+    id: '3', 
+    name: 'Sauvage', 
+    brand: 'Dior', 
+    image: '/images/sauvage.jpg' 
+  },
+  { 
+    id: '4', 
+    name: 'Baccarat Rouge 540', 
+    brand: 'MFK', 
+    image: '/images/baccarat-rouge.jpg' 
+  },
 ];
 
 const PopularScents: React.FC<{ onSelect: (name: string) => void }> = ({ onSelect }) => {
