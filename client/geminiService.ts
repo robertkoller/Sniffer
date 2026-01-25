@@ -8,13 +8,30 @@ export async function searchCologne(query: string): Promise<ScentDetails | null>
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Search for the cologne "${query}". Provide details including brand, a brief AI overview, scent notes (top, middle, base), a list of reputable online sellers with approximate prices, and physical stores where it might be available to sample (like Nordstrom, Sephora, Macy's). Also provide a credibility score for each seller based on general market reputation.`,
+      contents: `You are an expert fragrance fact-checker. 
+      Query: "${query}"
+
+      STRICT SEARCH & VERIFICATION PROTOCOL:
+      1. MUST BE A FRAGRANCE: Verify if this is a real, commercially produced cologne, perfume, or EDP.
+      2. REALITY CHECK: If you find search results for generic items (e.g., Shrek toys, Firefighter costumes) but NO clear evidence of a liquid fragrance product with that name, set "exists" to false.
+      3. UNCERTAINTY: If you find the product exists but it is extremely rare, a discontinued novelty, or search results are mixed with non-fragrance items, set "isUncertain" to true and provide a "uncertaintyWarning".
+      4. HALLUCINATION PREVENTION: Do NOT create a product like "Firefighter for Men" just to satisfy the query. If it doesn't exist in reality, set "exists" to false.
+      5. CREATIVE EXCEPTIONS: Only return "Eau de Colonel" for "chicken" because it is a verified real product.
+      
+      REQUIRED DATA:
+      - Scent pyramid (top, middle, base).
+      - RETAILER LIST: 12-15 retailers. Prioritize direct product pages.
+      - Exact prices from search snippets.
+      - Credibility scores (0-100).`,
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
           properties: {
+            exists: { type: Type.BOOLEAN, description: "True ONLY if a real fragrance product is verified to exist." },
+            isUncertain: { type: Type.BOOLEAN, description: "True if the product is very rare, hard to verify, or has mixed search results." },
+            uncertaintyWarning: { type: Type.STRING, description: "A message explaining why the results might be unreliable (e.g. 'This is a rare novelty item')." },
             name: { type: Type.STRING },
             brand: { type: Type.STRING },
             overview: { type: Type.STRING },
@@ -52,27 +69,26 @@ export async function searchCologne(query: string): Promise<ScentDetails | null>
                 required: ["name", "url"]
               }
             },
-            imagePrompt: { type: Type.STRING, description: "A visual prompt to represent this cologne's aesthetic" }
+            imagePrompt: { type: Type.STRING }
           },
-          required: ["name", "brand", "overview", "notes", "onlineSellers", "physicalStores", "imagePrompt"]
+          required: ["exists", "isUncertain", "name", "brand", "overview", "notes", "onlineSellers", "physicalStores", "imagePrompt"]
         },
       },
     });
 
-    if (!response.text) {
-      return null;
-    }
+    if (!response.text) return null;
 
     const result = JSON.parse(response.text);
     
-    // Extract grounding sources from groundingMetadata.groundingChunks as required by guidelines
+    // If the model explicitly says the product doesn't exist or isn't a fragrance
+    if (result.exists === false) {
+      return null;
+    }
+
     const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
     const groundingSources: GroundingSource[] = chunks?.map((chunk: any) => {
       if (chunk.web) {
-        return {
-          title: chunk.web.title,
-          url: chunk.web.uri
-        };
+        return { title: chunk.web.title, url: chunk.web.uri };
       }
       return null;
     }).filter((s: any): s is GroundingSource => s !== null) || [];
