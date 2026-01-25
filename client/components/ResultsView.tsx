@@ -1,7 +1,7 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ScentDetails, Seller, Store } from '../types';
-import { ShieldCheck, MapPin, Sparkles, ShoppingBag, ExternalLink, ChevronLeft, Droplets, Info, TrendingDown, CheckCircle2, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, MapPin, Sparkles, ShoppingBag, ExternalLink, ChevronLeft, Droplets, Info, TrendingDown, CheckCircle2, ChevronDown, ChevronUp, AlertTriangle, Navigation, LocateFixed, Store as StoreIcon } from 'lucide-react';
 import { HoverShift, IconAnim } from './MicroInteractions';
 
 interface ResultsViewProps {
@@ -25,6 +25,42 @@ const CredibilityBadge: React.FC<{ score: number }> = ({ score }) => {
 
 const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
   const [showAllSellers, setShowAllSellers] = useState(false);
+  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [isLocating, setIsLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  const requestLocation = () => {
+    setIsLocating(true);
+    setLocationError(null);
+    if ("geolocation" in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setUserCoords({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          });
+          setIsLocating(false);
+        },
+        (error) => {
+          console.error("Error getting location:", error);
+          setLocationError("Location access denied. Using general area.");
+          setIsLocating(false);
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    } else {
+      setLocationError("Geolocation not supported by your browser.");
+      setIsLocating(false);
+    }
+  };
+
+  const getMapsUrl = (storeName: string) => {
+    const destination = encodeURIComponent(storeName);
+    if (userCoords) {
+      return `https://www.google.com/maps/dir/?api=1&origin=${userCoords.lat},${userCoords.lng}&destination=${destination}&travelmode=driving`;
+    }
+    return `https://www.google.com/maps/search/?api=1&query=${destination}`;
+  };
 
   const getPrice = (p: string) =>
     p ? parseFloat(p.replace(/[^0-9.]/g, '')) : Infinity;
@@ -145,20 +181,77 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
               <MapPin className="w-20 h-20" />
             </div>
             <h3 className="serif text-3xl mb-4">Sniff it in person</h3>
-            <p className="text-amber-100/60 text-sm mb-8 leading-relaxed">
-              Find testers and samples at these nearby trusted retailers to see how it reacts with your skin chemistry.
+            <p className="text-amber-100/60 text-sm mb-6 leading-relaxed">
+              Find testers at these boutiques nearby. We'll give you directions so you can try it on your skin before you buy.
             </p>
+
+            <div className="mb-6">
+              {!userCoords ? (
+                <button 
+                  onClick={requestLocation}
+                  disabled={isLocating}
+                  className="w-full flex items-center justify-center gap-2 py-4 bg-white/10 border border-white/20 rounded-2xl hover:bg-white/20 transition-all font-bold text-xs uppercase tracking-widest"
+                >
+                  {isLocating ? (
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <LocateFixed className="w-4 h-4" />
+                  )}
+                  {isLocating ? 'Locating...' : 'Enable Location for Directions'}
+                </button>
+              ) : (
+                <div className="flex items-center gap-3 px-4 py-3 bg-emerald-500/20 border border-emerald-500/30 rounded-2xl text-emerald-300 text-[10px] font-black uppercase tracking-widest">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  Location Enabled: Precise Directions Ready
+                </div>
+              )}
+              {locationError && (
+                <p className="mt-2 text-[10px] text-rose-300 font-bold uppercase tracking-widest">{locationError}</p>
+              )}
+            </div>
+
             <div className="space-y-3">
-              {(data.physicalStores || []).map((store, i) => (
+              
+              {/* Nordstrom Button - Harmonized Style */}
+              <a
+              
+                href={getMapsUrl("Nordstrom")}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-between p-5 bg-white/5 border border-white/10 rounded-2xl hover:bg-white/15 hover:border-white/30 transition-all group/store shadow-sm mb-2"
+              >
+                <div className="flex flex-col">
+                  <span className="font-bold text-amber-50 group-hover/store:translate-x-1 transition-transform">Nordstrom</span>
+                  <span className="text-[9px] text-amber-100/40 uppercase tracking-widest mt-1">
+                    {userCoords ? 'Open Directions' : 'Search Nearby'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Navigation className="w-4 h-4 text-amber-400 opacity-0 group-hover/store:opacity-100 transition-all group-hover/store:translate-x-0 -translate-x-2" />
+                  <ExternalLink className="w-4 h-4 opacity-40 group-hover/store:opacity-100 transition-opacity" />
+                </div>
+              </a>
+              
+              {(data.physicalStores || [])
+                .filter(s => s.name.toLowerCase() !== 'nordstrom')
+                .map((store, i) => (
                 <a
                   key={i}
-                  href={store.url}
+                  href={getMapsUrl(store.name)}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center justify-between p-5 bg-white/5 border border-white/10 rounded-2xl hover:bg-white/15 hover:border-white/30 transition-all group/store"
+                  className="flex items-center justify-between p-5 bg-white/5 border border-white/10 rounded-2xl hover:bg-white/15 hover:border-white/30 transition-all group/store shadow-sm"
                 >
-                  <span className="font-bold text-amber-50 group-hover/store:translate-x-2 transition-transform">{store.name}</span>
-                  <ExternalLink className="w-4 h-4 opacity-40 group-hover/store:opacity-100 transition-opacity" />
+                  <div className="flex flex-col">
+                    <span className="font-bold text-amber-50 group-hover/store:translate-x-1 transition-transform">{store.name}</span>
+                    <span className="text-[9px] text-amber-100/40 uppercase tracking-widest mt-1">
+                      {userCoords ? 'Open Directions' : 'Search Nearby'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Navigation className="w-4 h-4 text-amber-400 opacity-0 group-hover/store:opacity-100 transition-all group-hover/store:translate-x-0 -translate-x-2" />
+                    <ExternalLink className="w-4 h-4 opacity-40 group-hover/store:opacity-100 transition-opacity" />
+                  </div>
                 </a>
               ))}
             </div>
