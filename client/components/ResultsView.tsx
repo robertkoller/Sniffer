@@ -1,7 +1,7 @@
 
-import React from 'react';
+import React, { useState } from 'react';
 import { ScentDetails, Seller, Store } from '../types';
-import { ShieldCheck, MapPin, Sparkles, ShoppingBag, ExternalLink, ChevronLeft, Droplets, Info, TrendingDown, CheckCircle2 } from 'lucide-react';
+import { ShieldCheck, MapPin, Sparkles, ShoppingBag, ExternalLink, ChevronLeft, Droplets, Info, TrendingDown, CheckCircle2, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 import { HoverShift, IconAnim } from './MicroInteractions';
 
 interface ResultsViewProps {
@@ -17,19 +17,58 @@ const CredibilityBadge: React.FC<{ score: number }> = ({ score }) => {
   return (
     <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-[10px] font-bold uppercase tracking-widest ${colorClass} transition-all hover:scale-105 cursor-help shadow-sm`}>
       <ShieldCheck className="w-3 h-3" />
-      <span>{score}% Trust</span>
+      <span>{score ?? 0}% Trust</span>
     </div>
   );
 };
 
 const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
-  const bestPriceSeller = [...data.onlineSellers].sort((a, b) => 
-    parseFloat(a.price.replace(/[^0-9.]/g, '')) - parseFloat(b.price.replace(/[^0-9.]/g, ''))
-  )[0];
+  const [showAllSellers, setShowAllSellers] = useState(false);
+
+  const getPrice = (p: string) =>
+    p ? parseFloat(p.replace(/[^0-9.]/g, '')) : Infinity;
+
+  const sellers = data.onlineSellers || [];
+
+  const prices = sellers
+    .map(s => getPrice(s.price))
+    .filter(p => isFinite(p));
+
+  const maxPrice = prices.length > 0 ? Math.max(...prices) : 1;
+
+  const scoredSellers = sellers.map(seller => {
+    const price = getPrice(seller.price);
+    const priceScore = isFinite(price) ? 1 - (price / maxPrice) : 0;
+    const trust = Number(seller.credibilityScore ?? 50);
+    const trustScore = trust / 100;
+
+    return {
+      ...seller,
+      score: (priceScore * 0.6) + (trustScore * 0.4)
+    };
+  });
+
+  const sortedSellers = [...scoredSellers].sort((a, b) => b.score - a.score);
+  const bestScoredSeller = sortedSellers[0];
+  const displayedSellers = showAllSellers ? sortedSellers : sortedSellers.slice(0, 4);
 
   return (
-    <div className="max-w-7xl mx-auto px-6 py-12 animate-results">
-      {/* Header Bar */}
+    <div className="max-w-7xl mx-auto px-6 py-12 animate-results overflow-visible">
+      {/* Uncertainty Warning */}
+      {data.isUncertain && (
+        <div className="mb-12 p-6 bg-rose-50 border border-rose-100 rounded-[2rem] flex items-start gap-6 animate-pulse">
+          <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center shrink-0">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
+          <div>
+            <h4 className="font-bold text-rose-900 mb-1 tracking-tight">Potentially Unreliable Results</h4>
+            <p className="text-sm text-rose-900/60 leading-relaxed">
+              {data.uncertaintyWarning || "This product is rare, discontinued, or has mixed search results. Prices and availability may not be accurate."}
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
         <button 
           onClick={onBack}
@@ -41,18 +80,19 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
           <span>Back to Search</span>
         </button>
         
-        <div className="flex items-center gap-4 bg-white border border-amber-100 px-6 py-3 rounded-2xl shadow-sm hover:shadow-md transition-shadow">
-          <TrendingDown className="w-5 h-5 text-emerald-500 animate-pulse" />
-          <p className="text-sm font-medium text-amber-900/80">
-            Lowest Price found: <span className="font-black text-amber-900 text-lg">{bestPriceSeller?.price || 'N/A'}</span>
-          </p>
-        </div>
+        {bestScoredSeller && (
+          <div className="flex items-center gap-4 bg-white border border-amber-100 px-6 py-3 rounded-2xl shadow-sm hover:shadow-md transition-shadow">
+            <TrendingDown className="w-5 h-5 text-emerald-500 animate-pulse" />
+            <p className="text-sm font-medium text-amber-900/80">
+              Lowest Price found: <span className="font-black text-amber-900 text-lg">{bestScoredSeller.price}</span>
+            </p>
+          </div>
+        )}
       </div>
 
-      <div className="grid lg:grid-cols-12 gap-10">
-        {/* Profile Card - Fixed stable container */}
+      <div className="grid lg:grid-cols-12 gap-10 overflow-visible">
         <div className="lg:col-span-5 space-y-8">
-          <div className="bg-white p-12 rounded-[3rem] border border-amber-100/40 shadow-xl relative overflow-hidden group transition-all duration-500 hover:shadow-2xl">
+          <div className="bg-white p-12 rounded-[3rem] border border-amber-100/40 shadow-xl relative overflow-hidden group">
             <div className="absolute -top-10 -right-10 opacity-[0.05] transition-transform duration-1000 group-hover:rotate-45 group-hover:scale-150">
               <Sparkles className="w-64 h-64 text-amber-900" />
             </div>
@@ -81,11 +121,11 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
                   </h3>
                   
                   <div className="space-y-6">
-                    {Object.entries(data.notes).map(([key, notes]) => (
+                    {Object.entries(data.notes || {}).map(([key, notes]) => (
                       <div key={key} className="flex flex-col gap-3 group/note">
                         <p className="text-[9px] font-black text-amber-400 uppercase tracking-widest">{key} Notes</p>
                         <div className="flex flex-wrap gap-2">
-                          {notes.map(n => (
+                          {(notes as string[]).map(n => (
                             <span key={n} className="note-item px-4 py-2 bg-amber-50/50 border border-amber-100/50 text-amber-900 rounded-xl text-xs font-bold">
                               {n}
                             </span>
@@ -99,7 +139,6 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
             </div>
           </div>
 
-          {/* Try It Out Card */}
           <HoverShift className="bg-amber-900 text-amber-50 p-10 rounded-[3rem] shadow-2xl relative overflow-hidden group">
             <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-125 transition-transform">
               <MapPin className="w-20 h-20" />
@@ -109,7 +148,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
               Find testers and samples at these nearby trusted retailers to see how it reacts with your skin chemistry.
             </p>
             <div className="space-y-3">
-              {data.physicalStores.map((store, i) => (
+              {(data.physicalStores || []).map((store, i) => (
                 <a 
                   key={i}
                   href={store.url}
@@ -125,8 +164,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
           </HoverShift>
         </div>
 
-        {/* Sellers Section */}
-        <div className="lg:col-span-7">
+        <div className="lg:col-span-7 overflow-visible">
           <div className="flex items-center justify-between mb-10">
             <h2 className="serif text-4xl text-amber-900 flex items-center gap-4">
               <IconAnim><ShoppingBag className="w-8 h-8 text-amber-700" /></IconAnim>
@@ -134,57 +172,78 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
             </h2>
             <div className="hidden sm:flex items-center gap-2 px-4 py-2 bg-emerald-50 rounded-full border border-emerald-100 text-emerald-800 text-[10px] font-black uppercase tracking-widest">
               <CheckCircle2 className="w-4 h-4" />
-              Real-time Market Data
+              Showing {sortedSellers.length} Sellers
             </div>
           </div>
 
-          <div className="grid gap-6">
-            {data.onlineSellers.map((seller, i) => {
-              const isBestDeal = seller === bestPriceSeller;
+          <div className="grid gap-12 overflow-visible">
+            {displayedSellers.map((seller, i) => {
+              const isBestDeal = seller === bestScoredSeller;
               return (
-                <a 
-                  key={i}
-                  href={seller.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={`group block relative ${isBestDeal ? 'border-beam' : ''}`}
-                >
-                  <div className={`bg-white p-8 rounded-3xl border transition-all duration-500 flex flex-col sm:flex-row items-center justify-between gap-6 hover:shadow-2xl ${isBestDeal ? 'border-amber-400 shadow-xl sm:-translate-x-2' : 'border-amber-100/50 hover:border-amber-200'}`}>
-                    {isBestDeal && (
-                      <div className="absolute -top-3 left-8 px-4 py-1 bg-amber-400 text-amber-900 font-black text-[9px] uppercase tracking-[0.2em] rounded-full shadow-lg">
-                        Best Scored Deal
+                <div key={i} className="relative pt-8 overflow-visible">
+                  {isBestDeal && (
+                    <div className="absolute -top-1 left-8 z-50 px-5 py-2 bg-amber-400 text-amber-900 font-black text-[10px] uppercase tracking-[0.2em] rounded-full shadow-xl border-2 border-white animate-bounce">
+                      Best Overall Score
+                    </div>
+                  )}
+                  <a 
+                    href={seller.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`group block relative p-1 rounded-[2.5rem] ${isBestDeal ? 'bg-gradient-to-br from-amber-400/20 to-amber-200/20 border-beam' : ''}`}
+                  >
+                    <div className={`bg-white p-8 rounded-[2.2rem] border transition-all duration-500 flex flex-col sm:flex-row items-center justify-between gap-6 hover:shadow-2xl relative z-10 ${isBestDeal ? 'border-amber-400 shadow-xl' : 'border-amber-100/50 hover:border-amber-200'}`}>
+                      <div className="flex items-center gap-6 w-full sm:w-auto">
+                        <div className={`w-16 h-16 rounded-2xl flex items-center justify-center shrink-0 transition-all duration-500 ${isBestDeal ? 'bg-amber-100 text-amber-900 rotate-3' : 'bg-amber-50 text-amber-700 group-hover:rotate-6'}`}>
+                          <ShoppingBag className="w-8 h-8" />
+                        </div>
+                        <div>
+                          <h4 className="text-2xl font-black text-amber-900 mb-1 leading-tight">{seller.name}</h4>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <CredibilityBadge score={seller.credibilityScore} />
+                            {seller.isTrusted && (
+                              <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest">Verified Seller</span>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    )}
-                    
-                    <div className="flex items-center gap-6 w-full sm:w-auto">
-                      <div className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all duration-500 ${isBestDeal ? 'bg-amber-100 text-amber-900 rotate-3' : 'bg-amber-50 text-amber-700 group-hover:rotate-6'}`}>
-                        <ShoppingBag className="w-8 h-8" />
-                      </div>
-                      <div>
-                        <h4 className="text-2xl font-black text-amber-900 mb-1">{seller.name}</h4>
-                        <div className="flex items-center gap-3">
-                          <CredibilityBadge score={seller.credibilityScore} />
-                          {seller.isTrusted && (
-                            <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest">Verified</span>
-                          )}
+                      
+                      <div className="flex items-center gap-8 w-full sm:w-auto justify-between sm:justify-end border-t sm:border-t-0 pt-6 sm:pt-0 border-amber-50">
+                        <div className="text-right">
+                          <p className="text-[10px] text-amber-400 font-black uppercase tracking-widest mb-1">Price</p>
+                          <p className="text-4xl serif text-amber-900 font-black tracking-tight">{seller.price}</p>
+                        </div>
+                        <div className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-500 shrink-0 ${isBestDeal ? 'bg-amber-900 text-white group-hover:scale-110 group-hover:rotate-45' : 'bg-amber-50 text-amber-900 hover:bg-amber-100 group-hover:rotate-12'}`}>
+                          <ExternalLink className="w-6 h-6" />
                         </div>
                       </div>
                     </div>
-                    
-                    <div className="flex items-center gap-8 w-full sm:w-auto justify-between sm:justify-end border-t sm:border-t-0 pt-6 sm:pt-0 border-amber-50">
-                      <div className="text-right">
-                        <p className="text-[10px] text-amber-400 font-black uppercase tracking-widest mb-1">Price</p>
-                        <p className="text-4xl serif text-amber-900 font-black tracking-tight">{seller.price}</p>
-                      </div>
-                      <div className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-500 ${isBestDeal ? 'bg-amber-900 text-white group-hover:scale-110 group-hover:rotate-45' : 'bg-amber-50 text-amber-900 hover:bg-amber-100 group-hover:rotate-12'}`}>
-                        <ExternalLink className="w-6 h-6" />
-                      </div>
-                    </div>
-                  </div>
-                </a>
+                  </a>
+                </div>
               );
             })}
           </div>
+
+          {sortedSellers.length > 4 && (
+            <div className="mt-12 flex justify-center">
+              <button 
+                onClick={() => setShowAllSellers(!showAllSellers)}
+                className="flex items-center gap-2 px-10 py-5 bg-white border border-amber-200 rounded-[2rem] text-amber-900 font-black text-xs uppercase tracking-[0.2em] hover:bg-amber-50 hover:border-amber-400 transition-all shadow-sm group"
+              >
+                {showAllSellers ? (
+                  <>
+                    <ChevronUp className="w-4 h-4 transition-transform group-hover:-translate-y-1" />
+                    <span>Collapse Results</span>
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="w-4 h-4 transition-transform group-hover:translate-y-1" />
+                    <span>Show {sortedSellers.length - 4} More Retailers</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
 
           <div className="mt-12 p-12 rounded-[3rem] bg-gradient-to-br from-white to-amber-50/50 border border-amber-100 relative overflow-hidden group shadow-inner">
             <div className="absolute top-0 right-0 p-12 opacity-5 group-hover:opacity-10 transition-opacity">
@@ -193,34 +252,10 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
             <div className="max-w-xl">
               <h4 className="serif text-3xl text-amber-900 mb-4 italic">The Sniffer Guarantee</h4>
               <p className="text-amber-900/60 text-sm leading-relaxed font-medium">
-                Our algorithm cross-references price, shipping speed, and seller history. A credibility score above 80% indicates a highly reputable vendor with consistent service and genuine inventory.
+                Our algorithm highlights verified retailers first. A credibility score above 80% indicates a highly reputable vendor. We include smaller discounters to ensure you find the absolute lowest price on the market.
               </p>
             </div>
           </div>
-
-          {/* Grounding Sources */}
-          {data.groundingSources && data.groundingSources.length > 0 && (
-            <div className="mt-12 pt-12 border-t border-amber-100">
-              <h3 className="text-amber-900 font-black text-[11px] uppercase tracking-[0.3em] mb-6 flex items-center gap-2">
-                <IconAnim><ExternalLink className="w-4 h-4 text-amber-400" /></IconAnim>
-                Information Sources
-              </h3>
-              <div className="flex flex-wrap gap-4">
-                {data.groundingSources.map((source, idx) => (
-                  <a 
-                    key={idx}
-                    href={source.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-4 py-2 bg-white border border-amber-100 rounded-full text-xs text-amber-700 hover:bg-amber-50 transition-colors flex items-center gap-2 shadow-sm"
-                  >
-                    <span className="max-w-[150px] truncate">{source.title || 'View Source'}</span>
-                    <ExternalLink className="w-3 h-3 opacity-50" />
-                  </a>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>

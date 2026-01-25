@@ -31,6 +31,10 @@ export interface ScentDetails {
   physicalStores: Store[];
   imagePrompt: string;
   groundingSources?: GroundingSource[];
+  // New safety fields
+  exists: boolean;
+  isUncertain: boolean;
+  uncertaintyWarning?: string;
 }
 
 export interface PopularScent {
