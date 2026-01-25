@@ -4,6 +4,38 @@ import { ScentDetails, GroundingSource } from "./types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
+/**
+ * Identifies a cologne from a base64 image string.
+ */
+export async function identifyCologneFromImage(base64Image: string): Promise<string | null> {
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              inlineData: {
+                mimeType: "image/jpeg",
+                data: base64Image.split(',')[1] || base64Image
+              }
+            },
+            {
+              text: "Identify this fragrance bottle. Provide ONLY the Brand and Name of the product (e.g., 'Tom Ford Tobacco Vanille'). Do not add any other text."
+            }
+          ]
+        }
+      ]
+    });
+
+    return response.text?.trim() || null;
+  } catch (error) {
+    console.error("Error identifying image:", error);
+    return null;
+  }
+}
+
 export async function searchCologne(query: string): Promise<ScentDetails | null> {
   try {
     const response = await ai.models.generateContent({
@@ -22,7 +54,7 @@ export async function searchCologne(query: string): Promise<ScentDetails | null>
       - Scent pyramid (top, middle, base).
       - RETAILER LIST: 12-15 retailers. Prioritize direct product pages.
       - Exact prices from search snippets.
-      - Credibility scores (0-100).`,
+      - Credibility scores (0-100). Be strict: 90+ for authorized dealers, 70-89 for reputable third-party, below 70 for gray market.`,
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
@@ -30,8 +62,8 @@ export async function searchCologne(query: string): Promise<ScentDetails | null>
           type: Type.OBJECT,
           properties: {
             exists: { type: Type.BOOLEAN, description: "True ONLY if a real fragrance product is verified to exist." },
-            isUncertain: { type: Type.BOOLEAN, description: "True if the product is very rare, hard to verify, or has mixed search results." },
-            uncertaintyWarning: { type: Type.STRING, description: "A message explaining why the results might be unreliable (e.g. 'This is a rare novelty item')." },
+            isUncertain: { type: Type.BOOLEAN, description: "True if the product is very rare or hard to verify." },
+            uncertaintyWarning: { type: Type.STRING },
             name: { type: Type.STRING },
             brand: { type: Type.STRING },
             overview: { type: Type.STRING },
@@ -80,7 +112,6 @@ export async function searchCologne(query: string): Promise<ScentDetails | null>
 
     const result = JSON.parse(response.text);
     
-    // If the model explicitly says the product doesn't exist or isn't a fragrance
     if (result.exists === false) {
       return null;
     }
