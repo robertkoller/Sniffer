@@ -7,7 +7,7 @@ import ResultsView from './components/ResultsView';
 import HowItWorks from './components/HowItWorks';
 import TrustedSellers from './components/TrustedSellers';
 import FeatureNotReady from './components/FeatureNotReady';
-import { searchCologne, identifyCologneFromImage } from './geminiService';
+import { searchCologne, identifyCologneFromImage } from './apiService';
 import { ScentDetails } from './types';
 
 type ViewState = 'home' | 'results' | 'how-it-works' | 'trusted-sellers' | 'feature-not-ready';
