@@ -103,9 +103,9 @@ router.get('/search', async (req: Request, res: Response) => {
           v => ({ status: 'fulfilled' as const, value: v }),
           e => ({ status: 'rejected' as const, reason: e }),
         ),
-        // Use original query for Bing title-matching — canonical name adds the brand
-        // which becomes a required word and filters out listings that don't mention it
-        scrapeBingShopping(query, undefined, whoisEnabled).then(
+        // Use canonical name for Bing so title-matching filters out variants
+        // (e.g. "Absolu Aventus" won't pass when searching "Creed Aventus")
+        scrapeBingShopping(fragranticaQuery, undefined, whoisEnabled).then(
           v => ({ status: 'fulfilled' as const, value: v }),
           e => ({ status: 'rejected' as const, reason: e }),
         ),
@@ -152,7 +152,7 @@ router.get('/search', async (req: Request, res: Response) => {
 
     const cologne = fragranticaData.value;
 
-    const sellerData = await scrapeBingShopping(query, cologne.brand, whoisEnabled).then(
+    const sellerData = await scrapeBingShopping(`${cologne.brand} ${cologne.name}`, cologne.brand, whoisEnabled).then(
       v => ({ status: 'fulfilled' as const, value: v }),
       e => ({ status: 'rejected' as const, reason: e }),
     );

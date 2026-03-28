@@ -116,8 +116,10 @@ async function scrapeOnePage(
       'spray', 'for', 'men', 'mens', 'him', 'women', 'womens', 'her', 'by',
       'the', 'a', 'an', 'edp', 'edt', 'ml', 'oz', 'fl', 'new', 'authentic',
       'genuine', 'sealed', '34', '100', 'ounce', 'fluid',
-      // Note: variant words like "intense", "noir", "sport" are intentionally NOT here —
-      // they distinguish product lines and must be matched against the query.
+      // Common compound brand-name words that are not product differentiators
+      'christian', 'giorgio', 'yves', 'saint', 'original',
+      // Note: variant words like "intense", "noir", "sport", "absolu", "elixir" are
+      // intentionally NOT here — they distinguish product lines and must match the query.
     ]);
     const queryWords = queryStr.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 1);
 
@@ -136,11 +138,8 @@ async function scrapeOnePage(
       if (!specificQueryWords.length) return true;
 
       if (isTruncated) {
-        // For truncated titles, only require words ≥5 chars — these are distinctive
-        // product identifiers that must appear near the start of the title.
-        // Short words (brand abbreviations, "oud", "dior") may be cut off legitimately.
-        // This prevents "Creed Oud Aventus…" passing a "Oud Zarian" query (zarian=6)
-        // while still accepting "Sauvage Eau de…" for "Dior Sauvage" (sauvage=7).
+        // For truncated titles, only require words ≥5 chars — distinctive product
+        // identifiers appear near the start; short words may be cut off legitimately.
         const longSpecific = specificQueryWords.filter(w => w.length >= 5);
         if (!longSpecific.length) return true;
         return longSpecific.every(q => titleWords.some(w => w.includes(q) || q.includes(w)));
