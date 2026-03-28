@@ -198,13 +198,29 @@ async function scrapeOnePage(
 }
 
 export async function scrapeBingShopping(query: string, brand?: string, whoisEnabled = false): Promise<ScrapedSeller[]> {
-  const url = `https://www.bing.com/shop?q=${encodeURIComponent(`${query} 3.4oz 100ml fragrance`)}`;
+  const url = `https://www.bing.com/shop?q=${encodeURIComponent(query)}`;
   console.log(`[Bing Shopping] Searching: ${url}`);
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--no-first-run',
+      '--disable-gpu',
+    ],
+  });
   const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 900 },
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    viewport: { width: 1366, height: 768 },
+    locale: 'en-US',
+    timezoneId: 'America/Los_Angeles',
+    extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
+  });
+  // Mask headless indicators that Bing uses for bot detection
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   });
   const page = await context.newPage();
 
