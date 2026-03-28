@@ -1,11 +1,45 @@
 import { Router, Request, Response } from 'express';
-import { getCologneBySlug, saveCologneWithSellers } from '../db';
+import { getCologneBySlug, saveCologneWithSellers, getSetting } from '../db';
 import { scrapeFragrantica } from '../scrapers/fragrantica';
 import { scrapeBingShopping } from '../scrapers/bingShopping';
+import { findSellerSites } from '../scrapers/aiSellerSearch';
+import { scrapeDirectPrices } from '../scrapers/directPriceScraper';
+import { computeReferencePrice } from '../scrapers/trustScorer';
 import { identifyFromGoogleLens } from '../scrapers/googleLens';
 import { generateSlug, canonicalSlug } from '../utils/slug';
+import type { ScrapedSeller } from '../types';
 
 const router = Router();
+
+function saveAndRespond(
+  res: Response,
+  cologne: { name: string; brand: string; overview: string; notes: { top: string[]; middle: string[]; base: string[] }; url: string },
+  sellers: ScrapedSeller[],
+  querySlug: string,
+) {
+  const slug = canonicalSlug(cologne.brand, cologne.name);
+  const colognePayload = {
+    name:            cologne.name,
+    brand:           cologne.brand,
+    overview:        cologne.overview,
+    notes:           cologne.notes,
+    fragrantica_url: cologne.url,
+  };
+  const result = saveCologneWithSellers(slug, colognePayload, sellers);
+  if (slug !== querySlug) saveCologneWithSellers(querySlug, colognePayload, sellers);
+  res.json(result);
+}
+
+// Merge two seller arrays — AI results fill in sellers Bing didn't find.
+// Deduplicate by lowercased name. Re-score trust using the combined reference price.
+function mergeSellers(
+  bingSellers: ScrapedSeller[],
+  aiSellers: ScrapedSeller[],
+): ScrapedSeller[] {
+  const seen = new Set(bingSellers.map(s => s.name.toLowerCase()));
+  const newFromAi = aiSellers.filter(s => !seen.has(s.name.toLowerCase()));
+  return [...bingSellers, ...newFromAi];
+}
 
 // GET /api/search?q=Dior+Sauvage
 router.get('/search', async (req: Request, res: Response) => {
@@ -18,7 +52,7 @@ router.get('/search', async (req: Request, res: Response) => {
   const querySlug = generateSlug(query);
   console.log(`[Search] "${query}" → slug: ${querySlug}`);
 
-  // 1. Check DB first (instant return)
+  // 1. DB cache check
   const cached = getCologneBySlug(querySlug);
   if (cached) {
     console.log(`[Search] Cache hit for "${query}"`);
@@ -26,13 +60,89 @@ router.get('/search', async (req: Request, res: Response) => {
     return;
   }
 
-  // 2. Not in DB — scrape both sources in parallel
   console.log(`[Search] Cache miss — scraping for "${query}"`);
   try {
-    const [fragranticaData, sellerData] = await Promise.allSettled([
-      scrapeFragrantica(query),
-      scrapeBingShopping(query),
-    ]);
+    const whoisEnabled    = getSetting('whois_enabled') === '1';
+    const aiSearchEnabled = getSetting('ai_search_enabled') === '1';
+
+    if (aiSearchEnabled) {
+      // AI mode: Gemini verifies the fragrance and returns niche seller URLs.
+      // Bing scraper runs in parallel for mainstream sellers.
+      // Results are merged so we get the best of both.
+
+      let aiResult;
+      try {
+        aiResult = await findSellerSites(query);
+      } catch (err) {
+        console.warn('[AI Search] Gemini call failed:', err);
+        aiResult = null;
+      }
+
+      // Hard stop if Gemini says the fragrance doesn't exist
+      if (aiResult && !aiResult.exists) {
+        console.log(`[AI Search] Fragrance not found: "${query}"`);
+        res.status(404).json({
+          error: aiResult.uncertaintyWarning
+            ?? `Could not find a fragrance matching "${query}". Please check the name and try again.`,
+        });
+        return;
+      }
+
+      // Use Gemini's canonical name for Fragrantica to avoid wrong-match results
+      const fragranticaQuery = (aiResult?.canonicalBrand && aiResult?.canonicalName)
+        ? `${aiResult.canonicalBrand} ${aiResult.canonicalName}`
+        : query;
+      if (fragranticaQuery !== query) {
+        console.log(`[AI Search] Using canonical name for Fragrantica: "${fragranticaQuery}"`);
+      }
+
+      // Fragrantica + Bing run concurrently (AI scraping happens after so we have
+      // Bing's reference price to share across both result sets)
+      const [fragranticaData, bingResult] = await Promise.all([
+        scrapeFragrantica(fragranticaQuery).then(
+          v => ({ status: 'fulfilled' as const, value: v }),
+          e => ({ status: 'rejected' as const, reason: e }),
+        ),
+        // Use original query for Bing title-matching — canonical name adds the brand
+        // which becomes a required word and filters out listings that don't mention it
+        scrapeBingShopping(query, undefined, whoisEnabled).then(
+          v => ({ status: 'fulfilled' as const, value: v }),
+          e => ({ status: 'rejected' as const, reason: e }),
+        ),
+      ]);
+
+      if (fragranticaData.status === 'rejected') {
+        console.error('[Fragrantica] Failed:', fragranticaData.reason);
+        res.status(502).json({ error: `Could not find fragrance on Fragrantica: ${query}` });
+        return;
+      }
+
+      const cologne = fragranticaData.value;
+      const bingSellers: ScrapedSeller[] = bingResult.status === 'fulfilled' ? bingResult.value : [];
+      if (bingResult.status === 'rejected') {
+        console.warn('[Bing Shopping] Failed:', bingResult.reason);
+      }
+
+      // Scrape AI-provided niche sites, sharing Bing's reference price for consistent scoring
+      let aiSellers: ScrapedSeller[] = [];
+      if (aiResult?.sellers.length) {
+        const bingRefPrice = computeReferencePrice(bingSellers.map(s => s.price));
+        aiSellers = await scrapeDirectPrices(aiResult.sellers, cologne.brand, bingRefPrice || undefined);
+        console.log(`[AI Search] Got ${aiSellers.length} priced sellers from AI sites`);
+      }
+
+      const merged = mergeSellers(bingSellers, aiSellers);
+      console.log(`[Search] Merged: ${bingSellers.length} Bing + ${aiSellers.length} AI = ${merged.length} total sellers`);
+
+      saveAndRespond(res, cologne, merged, querySlug);
+      return;
+    }
+
+    // Non-AI mode: Fragrantica first, then Bing
+    const fragranticaData = await scrapeFragrantica(query).then(
+      v => ({ status: 'fulfilled' as const, value: v }),
+      e => ({ status: 'rejected' as const, reason: e }),
+    );
 
     if (fragranticaData.status === 'rejected') {
       console.error('[Fragrantica] Failed:', fragranticaData.reason);
@@ -41,39 +151,17 @@ router.get('/search', async (req: Request, res: Response) => {
     }
 
     const cologne = fragranticaData.value;
-    const sellers = sellerData.status === 'fulfilled' ? sellerData.value : [];
 
+    const sellerData = await scrapeBingShopping(query, cologne.brand, whoisEnabled).then(
+      v => ({ status: 'fulfilled' as const, value: v }),
+      e => ({ status: 'rejected' as const, reason: e }),
+    );
+    const sellers = sellerData.status === 'fulfilled' ? sellerData.value : [];
     if (sellerData.status === 'rejected') {
       console.warn('[Bing Shopping] Failed (continuing without prices):', sellerData.reason);
     }
 
-    // Use canonical slug (brand + name) so future searches match
-    const slug = canonicalSlug(cologne.brand, cologne.name);
-
-    const result = saveCologneWithSellers(
-      slug,
-      {
-        name:           cologne.name,
-        brand:          cologne.brand,
-        overview:       cologne.overview,
-        notes:          cologne.notes,
-        fragrantica_url: cologne.url,
-      },
-      sellers
-    );
-
-    // Also index by query slug so the same query hits cache next time
-    if (slug !== querySlug) {
-      saveCologneWithSellers(querySlug, {
-        name:           cologne.name,
-        brand:          cologne.brand,
-        overview:       cologne.overview,
-        notes:          cologne.notes,
-        fragrantica_url: cologne.url,
-      }, sellers);
-    }
-
-    res.json(result);
+    saveAndRespond(res, cologne, sellers, querySlug);
   } catch (err) {
     console.error('[Search] Unexpected error:', err);
     res.status(500).json({ error: 'Scraping failed. Try again shortly.' });
@@ -88,7 +176,6 @@ router.post('/identify', async (req: Request, res: Response) => {
     return;
   }
 
-  // Strip the data URL prefix if present: "data:image/jpeg;base64,<data>"
   const base64 = image.includes(',') ? image.split(',')[1] : image;
 
   try {

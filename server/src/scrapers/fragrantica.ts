@@ -5,10 +5,33 @@ const BASE_URL = 'https://www.fragrantica.com';
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --------------------------------------------------------------------------
+// Common fragrance brand abbreviations users type that don't match Fragrantica's full brand names
+const BRAND_ALIASES: Record<string, string> = {
+  'mfk':  'maison francis kurkdjian',
+  'tf':   'tom ford',
+  'cdg':  'comme des garcons',
+  'ysl':  'yves saint laurent',
+  'jo malone': 'jo malone london',
+  'mm':   'maison margiela',
+  'adp':  'acqua di parma',
+  'lb':   'le labo',
+};
+
+function expandAbbreviations(query: string): string {
+  // Strip accents first so "mfk baccarat rougé" → "mfk baccarat rouge" before alias check
+  let q = query.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  for (const [abbr, full] of Object.entries(BRAND_ALIASES)) {
+    const re = new RegExp(`\\b${abbr}\\b`, 'g');
+    q = q.replace(re, full);
+  }
+  return q;
+}
+
 // Search Fragrantica — intercept the Algolia response the browser makes
-// --------------------------------------------------------------------------
 async function searchFragranticaPage(query: string): Promise<{ name: string; brand: string; cologneUrl: string } | null> {
+  // Expand abbreviations so "mfk grand soir" gives you "Maison Francis Kurkdjian Grand Soir"
+  const expandedQuery = expandAbbreviations(query);
+
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -22,16 +45,21 @@ async function searchFragranticaPage(query: string): Promise<{ name: string; bra
 
   // Gendered suffixes that indicate a women's/unisex variant
   const FEMININE_MARKERS = ['for her', 'for women', 'femme', 'pour femme', 'woman', 'women'];
-  const queryLower = query.toLowerCase();
+  const queryLower = expandedQuery.toLowerCase();
   const queryMentionsGender = FEMININE_MARKERS.some(m => queryLower.includes(m));
+
+  // Strip diacritics so "vanillé" matches "vanille", "lancôme" matches "lancome", etc.
+  function stripAccents(s: string): string {
+    return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
 
   // Score how well a hit matches the query — lower is better (fewer extra words)
   // Checks query words against brand+name combined so "Creed Aventus" matches
   // a hit where brand="Creed" and name="Aventus".
   function matchScore(hitName: string, hitBrand: string, q: string): number {
-    const queryWords  = q.toLowerCase().trim().split(/\s+/);
-    const nameNorm    = hitName.toLowerCase().trim();
-    const combined    = `${hitBrand.toLowerCase().trim()} ${nameNorm}`;
+    const queryWords  = stripAccents(q).toLowerCase().trim().split(/\s+/);
+    const nameNorm    = stripAccents(hitName).toLowerCase().trim();
+    const combined    = `${stripAccents(hitBrand).toLowerCase().trim()} ${nameNorm}`;
     // All query words must appear somewhere in brand+name
     if (!queryWords.every(w => combined.includes(w))) return Infinity;
     // Score = extra words in the name beyond the query (prefer shorter/exact names)
@@ -45,6 +73,14 @@ async function searchFragranticaPage(query: string): Promise<{ name: string; bra
   }
 
   function extractHitUrl(hit: Record<string, unknown>): string {
+    // Fragrantica removed the 'url' field from Algolia hits.
+    // The current format is slug="Dior/Sauvage" + id=31861
+    // → https://www.fragrantica.com/perfume/Dior/Sauvage-31861.html
+    const slug = hit['slug'] as string | undefined;
+    const id   = hit['id'] ?? hit['objectID'];
+    if (slug && id) return `${BASE_URL}/perfume/${slug}-${id}.html`;
+
+    // Legacy fallback for the old url.EN format (kept in case it ever returns)
     const urlField = hit['url'] as Record<string, string | string[]> | string | undefined;
     const enField  = typeof urlField === 'object' ? urlField?.['EN'] : urlField;
     const rawUrl   = Array.isArray(enField) ? (enField[0] ?? '') : (enField ?? '');
@@ -76,19 +112,42 @@ async function searchFragranticaPage(query: string): Promise<{ name: string; bra
         const name  = String(hit['naslov'] ?? '');
         const brand = String(hit['dizajner'] ?? '');
         if (!name) continue;
-        const score = matchScore(name, brand, query);
+        const score = matchScore(name, brand, expandedQuery);
         if (score < bestScore) {
           bestScore = score;
           bestHit   = { name, brand, cologneUrl: extractHitUrl(hit) };
         }
       }
 
-      // If still nothing matched all query words, accept the very first named hit as fallback
+      // Partial fallback: if nothing matched all query words, find the hit that
+      // matches the most query words — but only if at least one SPECIFIC word
+      // (not a generic fragrance term) matches. Prevents "teriaq intense" → "J'adore Intense".
       if (!bestHit) {
-        const hit = allHits.find(h => String(h['naslov'] ?? ''));
-        if (hit) {
-          bestHit = { name: String(hit['naslov'] ?? ''), brand: String(hit['dizajner'] ?? ''), cologneUrl: extractHitUrl(hit) };
+        const GENERIC_WORDS = new Set([
+          'intense', 'eau', 'de', 'parfum', 'toilette', 'cologne', 'fragrance',
+          'perfume', 'for', 'men', 'women', 'homme', 'femme', 'noir', 'bleu',
+          'blue', 'black', 'white', 'gold', 'rose', 'sport', 'sport', 'edition',
+        ]);
+        const qWords = expandedQuery.toLowerCase().trim().split(/\s+/);
+        const specificWords = qWords.filter(w => w.length > 2 && !GENERIC_WORDS.has(w));
+
+        let bestPartialCount = 0;
+        let bestPartialHit: { name: string; brand: string; cologneUrl: string } | null = null;
+
+        for (const hit of allHits) {
+          const name  = String(hit['naslov'] ?? '');
+          const brand = String(hit['dizajner'] ?? '');
+          if (!name) continue;
+          const combined = stripAccents(`${brand} ${name}`).toLowerCase();
+          const matchCount = specificWords.filter(w => combined.includes(w)).length;
+          if (matchCount > bestPartialCount) {
+            bestPartialCount = matchCount;
+            bestPartialHit = { name, brand, cologneUrl: extractHitUrl(hit) };
+          }
         }
+
+        // Only accept if at least one specific word matched
+        if (bestPartialCount > 0) bestHit = bestPartialHit;
       }
     } catch {
       // Not JSON or not a search response — ignore
@@ -108,9 +167,7 @@ async function searchFragranticaPage(query: string): Promise<{ name: string; bra
   }
 }
 
-// --------------------------------------------------------------------------
-// Detail page — notes & description via Playwright
-// --------------------------------------------------------------------------
+// Detail page scraper from Playright
 async function scrapeDetailPage(cologneUrl: string): Promise<{
   overview: string;
   notes: { top: string[]; middle: string[]; base: string[] };
@@ -134,39 +191,51 @@ async function scrapeDetailPage(cologneUrl: string): Promise<{
         ?? document.querySelector('p.description');
       const overview = overviewEl?.textContent?.trim() ?? '';
 
-      // Notes — top/middle/base from pyramid sections
+      // Notes — classify by DOM position relative to "Top / Heart / Base" headings.
+      // This avoids relying on class names that change with Fragrantica redesigns.
       const notesTop: string[] = [];
       const notesMiddle: string[] = [];
       const notesBase: string[] = [];
-
-      const sections: Element[] = Array.from(
-        document.querySelectorAll('[class*="pyramid"] > div, [class*="notes"] > div')
-      );
-
-      for (const section of sections) {
-        const label = section.textContent?.toLowerCase() ?? '';
-        const noteLinks: HTMLAnchorElement[] = Array.from(section.querySelectorAll('a[href*="/notes/"]'));
-        const names = noteLinks.map(a => a.textContent?.trim() ?? '').filter(Boolean);
-        if (label.includes('top') || label.includes('head'))          notesTop.push(...names);
-        else if (label.includes('heart') || label.includes('middle')) notesMiddle.push(...names);
-        else if (label.includes('base'))                              notesBase.push(...names);
-      }
-
-      // Fallback: all note links → top (filter out generic labels)
       const EXCLUDED = new Set(['notes', 'note', 'ingredients']);
-      if (!notesTop.length && !notesMiddle.length && !notesBase.length) {
-        const seen = new Set<string>();
-        (Array.from(document.querySelectorAll('a[href*="/notes/"]')) as HTMLAnchorElement[]).forEach(a => {
-          const note = a.textContent?.trim() ?? '';
-          if (note && !seen.has(note) && !EXCLUDED.has(note.toLowerCase())) {
-            seen.add(note);
-            notesTop.push(note);
-          }
-        });
-      }
 
-      // Remove generic labels from any category
-      const clean = (arr: string[]) => arr.filter(n => !EXCLUDED.has(n.toLowerCase()) && n.length > 1);
+      // Get ALL elements in document order so we can compare positions by index.
+      const allEls: Element[] = Array.from(document.body.querySelectorAll('*'));
+
+      // Find the DOM index of heading elements that mark each category.
+      // Only look at small elements (few children) so we don't match large containers.
+      let topIdx = -1, midIdx = -1, baseIdx = -1;
+      allEls.forEach((el, i) => {
+        if (el.children.length > 10) return;
+        const t = (el.textContent ?? '').trim().toLowerCase();
+        if (/^top\s*notes?$/.test(t) || t === 'top') {
+          if (topIdx === -1) topIdx = i;
+        } else if (/^(heart|middle)\s*notes?$/.test(t) || t === 'heart' || t === 'middle') {
+          if (midIdx === -1) midIdx = i;
+        } else if (/^base\s*notes?$/.test(t) || t === 'base') {
+          if (baseIdx === -1) baseIdx = i;
+        }
+      });
+
+      // Assign each note link to a category based on which heading last preceded it.
+      const seen = new Set<string>();
+      allEls.forEach((el, i) => {
+        if (el.tagName !== 'A') return;
+        const href = (el as HTMLAnchorElement).href ?? '';
+        if (!href.includes('/notes/')) return;
+        const noteName = el.textContent?.trim() ?? '';
+        if (!noteName || seen.has(noteName) || EXCLUDED.has(noteName.toLowerCase())) return;
+        seen.add(noteName);
+
+        // Category = the last heading that appeared before this link in DOM order
+        let cat: 'top' | 'middle' | 'base' = 'top'; // default
+        if (baseIdx !== -1 && i > baseIdx) cat = 'base';
+        else if (midIdx !== -1 && i > midIdx) cat = 'middle';
+        else if (topIdx !== -1 && i > topIdx) cat = 'top';
+
+        if (cat === 'top') notesTop.push(noteName);
+        else if (cat === 'middle') notesMiddle.push(noteName);
+        else notesBase.push(noteName);
+      });
 
       return { overview, notesTop, notesMiddle, notesBase };
     });
@@ -174,8 +243,12 @@ async function scrapeDetailPage(cologneUrl: string): Promise<{
     const clean = (arr: string[]) =>
       arr.filter(n => !['notes', 'note', 'ingredients'].includes(n.toLowerCase()) && n.length > 1);
 
+    // Strip the appended notes list Fragrantica concatenates onto the description
+    // e.g. "...unique.Top Notes: Bergamot, Saffron Middle Notes: ..."
+    const overview = data.overview.replace(/\s*Top Notes?:.*$/is, '').trim();
+
     return {
-      overview: data.overview,
+      overview,
       notes: { top: clean(data.notesTop), middle: clean(data.notesMiddle), base: clean(data.notesBase) },
     };
   } finally {
@@ -183,9 +256,7 @@ async function scrapeDetailPage(cologneUrl: string): Promise<{
   }
 }
 
-// --------------------------------------------------------------------------
-// Public entry point
-// --------------------------------------------------------------------------
+// Public entry point for scraping Fragrantica — returns null if no good match found
 export async function scrapeFragrantica(query: string): Promise<ScrapedCologne> {
   console.log(`[Fragrantica] Searching for: "${query}"`);
   const result = await searchFragranticaPage(query);

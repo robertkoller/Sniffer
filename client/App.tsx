@@ -1,13 +1,13 @@
 
-import React, { useState } from 'react';
-import { Search, Camera } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Search, Shield, Sparkles } from 'lucide-react';
 import SearchHeader from './components/SearchHeader';
 import PopularScents from './components/PopularScents';
 import ResultsView from './components/ResultsView';
 import HowItWorks from './components/HowItWorks';
 import TrustedSellers from './components/TrustedSellers';
 import FeatureNotReady from './components/FeatureNotReady';
-import { searchCologne, identifyCologneFromImage } from './apiService';
+import { searchCologne, identifyCologneFromImage, getSettings, setWhoisEnabled, setAiSearchEnabled } from './apiService';
 import { ScentDetails } from './types';
 
 type ViewState = 'home' | 'results' | 'how-it-works' | 'trusted-sellers' | 'feature-not-ready';
@@ -19,6 +19,27 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [whoisEnabled, setWhoisEnabledState] = useState(false);
+  const [aiSearchEnabled, setAiSearchEnabledState] = useState(false);
+
+  useEffect(() => {
+    getSettings().then(s => {
+      setWhoisEnabledState(s.whoisEnabled);
+      setAiSearchEnabledState(s.aiSearchEnabled);
+    }).catch(() => {});
+  }, []);
+
+  const handleToggleWhois = async () => {
+    const next = !whoisEnabled;
+    setWhoisEnabledState(next);
+    await setWhoisEnabled(next).catch(() => setWhoisEnabledState(!next));
+  };
+
+  const handleToggleAi = async () => {
+    const next = !aiSearchEnabled;
+    setAiSearchEnabledState(next);
+    await setAiSearchEnabled(next).catch(() => setAiSearchEnabledState(!next));
+  };
 
   const handleSearch = async (query: string) => {
     setIsLoading(true);
@@ -189,6 +210,39 @@ const App: React.FC = () => {
               <span className="serif text-xl font-bold text-amber-900">sniffer</span>
             </div>
             <p className="text-amber-900/30 text-[10px] font-bold uppercase tracking-widest">© 2025 Sniffer Fragrance Search. All scents intended for discovery.</p>
+          </div>
+          <div className="flex flex-col items-end gap-6">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleToggleAi}
+                className={`flex items-center gap-3 px-5 py-3 rounded-2xl border transition-all text-xs font-bold uppercase tracking-widest ${
+                  aiSearchEnabled
+                    ? 'bg-amber-700 text-white border-amber-700'
+                    : 'bg-white text-amber-900/50 border-amber-100 hover:border-amber-300 hover:text-amber-900'
+                }`}
+              >
+                <Sparkles className="w-4 h-4" />
+                AI Search {aiSearchEnabled ? 'On' : 'Off'}
+              </button>
+              <button
+                onClick={handleToggleWhois}
+                className={`flex items-center gap-3 px-5 py-3 rounded-2xl border transition-all text-xs font-bold uppercase tracking-widest ${
+                  whoisEnabled
+                    ? 'bg-amber-900 text-white border-amber-900'
+                    : 'bg-white text-amber-900/50 border-amber-100 hover:border-amber-300 hover:text-amber-900'
+                }`}
+              >
+                <Shield className="w-4 h-4" />
+                WHOIS {whoisEnabled ? 'On' : 'Off'}
+              </button>
+            </div>
+            <p className="text-amber-900/30 text-[9px] uppercase tracking-widest text-right max-w-[260px]">
+              {aiSearchEnabled
+                ? 'AI finds seller pages, scraper extracts prices. Slower but more thorough.'
+                : whoisEnabled
+                  ? 'Domain age checked on new searches. Adds ~5s.'
+                  : 'AI Search uses Gemini to find retailers. WHOIS checks domain age.'}
+            </p>
           </div>
           <div className="flex gap-12">
             <div className="space-y-4">

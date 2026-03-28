@@ -60,9 +60,51 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_colognes_slug    ON colognes(slug);
     CREATE INDEX IF NOT EXISTS idx_sellers_cologne  ON sellers(cologne_id);
     CREATE INDEX IF NOT EXISTS idx_stores_cologne   ON stores(cologne_id);
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS domain_age_cache (
+      domain     TEXT    PRIMARY KEY,
+      age_days   INTEGER,
+      checked_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
   `);
 
+  // Seed default settings
+  db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('whois_enabled', '0')`).run();
+  db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('ai_search_enabled', '0')`).run();
+
   console.log('Database ready:', DB_PATH);
+}
+
+export function getSetting(key: string): string | null {
+  const row = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setSetting(key: string, value: string): void {
+  getDb().prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
+}
+
+export function getCachedDomainAge(domain: string): number | null | undefined {
+  // Returns undefined if not cached, null if cached but lookup failed, number if found
+  const CACHE_TTL_DAYS = 30;
+  const row = getDb().prepare(
+    'SELECT age_days, checked_at FROM domain_age_cache WHERE domain = ?'
+  ).get(domain) as { age_days: number | null; checked_at: number } | undefined;
+  if (!row) return undefined;
+  const staleDays = (Date.now() / 1000 - row.checked_at) / 86400;
+  if (staleDays > CACHE_TTL_DAYS) return undefined; // expired
+  return row.age_days; // null means lookup was attempted but failed
+}
+
+export function cacheDomainAge(domain: string, ageDays: number | null): void {
+  getDb().prepare(
+    'INSERT OR REPLACE INTO domain_age_cache (domain, age_days, checked_at) VALUES (?, ?, unixepoch())'
+  ).run(domain, ageDays);
 }
 
 export function getCologneBySlug(slug: string): ScentDetails | null {
@@ -172,6 +214,29 @@ export function deleteCologne(slug: string): boolean {
 }
 
 function buildScentDetails(cologne: CologneRow, sellers: SellerRow[], stores: StoreRow[]): ScentDetails {
+  // Compute median price across all sellers for value scoring
+  const numericPrices = sellers
+    .map(s => parseFloat(s.price.replace(/[^0-9.]/g, '')))
+    .filter(n => !isNaN(n) && n > 0)
+    .sort((a, b) => a - b);
+  const mid = Math.floor(numericPrices.length / 2);
+  const referencePrice = numericPrices.length === 0 ? 0
+    : numericPrices.length % 2 === 0
+      ? (numericPrices[mid - 1] + numericPrices[mid]) / 2
+      : numericPrices[mid];
+
+  // Value score = trust * price efficiency.
+  // Cheaper-than-median entries get a boost; pricier entries are penalised.
+  // The price ratio is capped at 2× so ultra-cheap/sketchy sites don't dominate.
+  function valueScore(s: SellerRow): number {
+    const price = parseFloat(s.price.replace(/[^0-9.]/g, ''));
+    if (isNaN(price) || price <= 0 || referencePrice <= 0) return s.credibility_score;
+    const priceRatio = Math.min(referencePrice / price, 2);
+    return s.credibility_score * priceRatio;
+  }
+
+  const sortedSellers = [...sellers].sort((a, b) => valueScore(b) - valueScore(a));
+
   return {
     name: cologne.name,
     brand: cologne.brand,
@@ -181,7 +246,7 @@ function buildScentDetails(cologne: CologneRow, sellers: SellerRow[], stores: St
       middle: JSON.parse(cologne.notes_middle || '[]'),
       base:   JSON.parse(cologne.notes_base   || '[]'),
     },
-    onlineSellers: sellers.map(s => ({
+    onlineSellers: sortedSellers.map(s => ({
       name:             s.name,
       price:            s.price,
       url:              s.url,
