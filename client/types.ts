@@ -37,6 +37,15 @@ export interface ScentDetails {
   uncertaintyWarning?: string;
 }
 
+export interface NearbyStore {
+  name: string;
+  address: string;
+  distance: number; // miles
+  lat: number;
+  lng: number;
+  stockLikelihood: 'likely' | 'uncertain';
+}
+
 export interface PopularScent {
   id: string;
   name: string;

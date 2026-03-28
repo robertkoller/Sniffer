@@ -20,7 +20,7 @@ async function refreshAllPrices(): Promise<void> {
       console.error(`[Daily Update] Failed for ${cologne.name}:`, err);
     }
 
-    // Be polite — wait between each cologne to avoid rate limits
+    // Waiting to avoid rate limits
     await delay(3000);
   }
 

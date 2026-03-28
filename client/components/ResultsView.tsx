@@ -1,8 +1,36 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { ScentDetails, Seller, Store } from '../types';
-import { ShieldCheck, MapPin, Sparkles, ShoppingBag, ExternalLink, ChevronLeft, Droplets, Info, TrendingDown, CheckCircle2, ChevronDown, ChevronUp, AlertTriangle, Navigation, LocateFixed, Store as StoreIcon } from 'lucide-react';
+import { ShieldCheck, MapPin, Sparkles, ShoppingBag, ExternalLink, ChevronLeft, Droplets, Info, TrendingDown, CheckCircle2, ChevronDown, ChevronUp, AlertTriangle, Navigation, LocateFixed } from 'lucide-react';
 import { HoverShift, IconAnim } from './MicroInteractions';
+
+const RETAILERS = [
+  'Sephora',
+  'Nordstrom',
+  "Macy's",
+  'Ulta Beauty',
+  "Bloomingdale's",
+  'Neiman Marcus',
+  'Perfumania',
+  "Dillard's",
+];
+
+const NICHE_BRANDS    = ['creed','amouage','xerjoff','roja','clive christian','byredo','le labo','diptyque','frederic malle','acqua di parma','kilian','maison francis kurkdjian','parfums de marly','initio','serge lutens','penhaligon','lattafa'];
+const MAINSTREAM_BRANDS = ['dior','chanel','ysl','yves saint laurent','versace','prada','armani','burberry','calvin klein','gucci','valentino','lancome','bvlgari','carolina herrera','montblanc','jimmy choo','jo malone','givenchy','coach','polo','hugo boss','dolce','tom ford','marc jacobs','maison margiela'];
+const LUXURY_RETAILERS     = ['nordstrom',"bloomingdale's",'neiman marcus',"dillard's",'saks'];
+const MAINSTREAM_RETAILERS = ['sephora',"macy's",'ulta beauty','belk','perfumania'];
+
+function getStockLikelihood(brand: string, retailer: string): 'likely' | 'uncertain' {
+  const b = brand.toLowerCase();
+  const r = retailer.toLowerCase();
+  const isNiche      = NICHE_BRANDS.some(f => b.includes(f));
+  const isMainstream = MAINSTREAM_BRANDS.some(f => b.includes(f));
+  const isLuxury     = LUXURY_RETAILERS.some(f => r.includes(f));
+  const isMainstreamR = MAINSTREAM_RETAILERS.some(f => r.includes(f));
+  if (isNiche)      return isLuxury ? 'likely' : 'uncertain';
+  if (isMainstream) return (isLuxury || isMainstreamR) ? 'likely' : 'uncertain';
+  return 'uncertain';
+}
 
 interface ResultsViewProps {
   data: ScentDetails;
@@ -32,34 +60,32 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
   const requestLocation = () => {
     setIsLocating(true);
     setLocationError(null);
-    if ("geolocation" in navigator) {
+    if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
-          setUserCoords({
-            lat: position.coords.latitude,
-            lng: position.coords.longitude
-          });
+          setUserCoords({ lat: position.coords.latitude, lng: position.coords.longitude });
           setIsLocating(false);
         },
         (error) => {
-          console.error("Error getting location:", error);
-          setLocationError("Location access denied. Using general area.");
+          console.error('Error getting location:', error);
+          setLocationError('Location access denied.');
           setIsLocating(false);
         },
-        { enableHighAccuracy: true, timeout: 10000 }
+        { enableHighAccuracy: true, timeout: 10000 },
       );
     } else {
-      setLocationError("Geolocation not supported by your browser.");
+      setLocationError('Geolocation not supported by your browser.');
       setIsLocating(false);
     }
   };
 
+  // Opens a Google Maps search for the store name centered at the user's location
   const getMapsUrl = (storeName: string) => {
-    const destination = encodeURIComponent(storeName);
+    const encoded = encodeURIComponent(storeName);
     if (userCoords) {
-      return `https://www.google.com/maps/dir/?api=1&origin=${userCoords.lat},${userCoords.lng}&destination=${destination}&travelmode=driving`;
+      return `https://www.google.com/maps/search/${encoded}/@${userCoords.lat},${userCoords.lng},13z`;
     }
-    return `https://www.google.com/maps/search/?api=1&query=${destination}`;
+    return `https://www.google.com/maps/search/${encoded}`;
   };
 
   const getPrice = (p: string) =>
@@ -211,49 +237,34 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
             </div>
 
             <div className="space-y-3">
-              
-              {/* Nordstrom Button - Harmonized Style */}
-              <a
-              
-                href={getMapsUrl("Nordstrom")}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-between p-5 bg-white/5 border border-white/10 rounded-2xl hover:bg-white/15 hover:border-white/30 transition-all group/store shadow-sm mb-2"
-              >
-                <div className="flex flex-col">
-                  <span className="font-bold text-amber-50 group-hover/store:translate-x-1 transition-transform">Nordstrom</span>
-                  <span className="text-[9px] text-amber-100/40 uppercase tracking-widest mt-1">
-                    {userCoords ? 'Open Directions' : 'Search Nearby'}
-                  </span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Navigation className="w-4 h-4 text-amber-400 opacity-0 group-hover/store:opacity-100 transition-all group-hover/store:translate-x-0 -translate-x-2" />
-                  <ExternalLink className="w-4 h-4 opacity-40 group-hover/store:opacity-100 transition-opacity" />
-                </div>
-              </a>
-              
-              {(data.physicalStores || [])
-                .filter(s => s.name.toLowerCase() !== 'nordstrom')
-                .map((store, i) => (
-                <a
-                  key={i}
-                  href={getMapsUrl(store.name)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-between p-5 bg-white/5 border border-white/10 rounded-2xl hover:bg-white/15 hover:border-white/30 transition-all group/store shadow-sm"
-                >
-                  <div className="flex flex-col">
-                    <span className="font-bold text-amber-50 group-hover/store:translate-x-1 transition-transform">{store.name}</span>
-                    <span className="text-[9px] text-amber-100/40 uppercase tracking-widest mt-1">
-                      {userCoords ? 'Open Directions' : 'Search Nearby'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <Navigation className="w-4 h-4 text-amber-400 opacity-0 group-hover/store:opacity-100 transition-all group-hover/store:translate-x-0 -translate-x-2" />
-                    <ExternalLink className="w-4 h-4 opacity-40 group-hover/store:opacity-100 transition-opacity" />
-                  </div>
-                </a>
-              ))}
+              {!userCoords && (
+                <p className="text-[10px] text-amber-100/30 font-bold uppercase tracking-widest text-center py-2">
+                  Enable location to open directions
+                </p>
+              )}
+              {RETAILERS.map((storeName, i) => {
+                const likelihood = getStockLikelihood(data.brand, storeName);
+                return (
+                  <a
+                    key={i}
+                    href={getMapsUrl(storeName)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between p-5 bg-white/5 border border-white/10 rounded-2xl hover:bg-white/15 hover:border-white/30 transition-all group/store shadow-sm"
+                  >
+                    <div className="flex flex-col gap-1">
+                      <span className="font-bold text-amber-50 group-hover/store:translate-x-1 transition-transform">{storeName}</span>
+                      <span className={`text-[9px] font-black uppercase tracking-widest ${likelihood === 'likely' ? 'text-emerald-400' : 'text-amber-300'}`}>
+                        {likelihood === 'likely' ? 'Likely in stock' : 'Call to confirm'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Navigation className="w-4 h-4 text-amber-400 opacity-0 group-hover/store:opacity-100 transition-all group-hover/store:translate-x-0 -translate-x-2" />
+                      <ExternalLink className="w-4 h-4 opacity-40 group-hover/store:opacity-100 transition-opacity" />
+                    </div>
+                  </a>
+                );
+              })}
             </div>
           </HoverShift>
         </div>
