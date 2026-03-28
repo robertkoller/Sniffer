@@ -43,9 +43,15 @@ function mergeSellers(
 
 // GET /api/search?q=Dior+Sauvage
 router.get('/search', async (req: Request, res: Response) => {
-  const query = (req.query.q as string)?.trim();
+  const raw = (req.query.q as string)?.trim() ?? '';
+  // Strip control characters and collapse whitespace
+  const query = raw.replace(/[\x00-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
   if (!query) {
     res.status(400).json({ error: 'Missing query parameter: q' });
+    return;
+  }
+  if (query.length > 120) {
+    res.status(400).json({ error: 'Query too long (max 120 characters).' });
     return;
   }
 
@@ -170,13 +176,21 @@ router.get('/search', async (req: Request, res: Response) => {
 
 // POST /api/identify  — body: { image: "<base64 string>" }
 router.post('/identify', async (req: Request, res: Response) => {
-  const { image } = req.body as { image?: string };
-  if (!image) {
-    res.status(400).json({ error: 'Missing body field: image' });
+  const { image } = req.body as { image?: unknown };
+  if (!image || typeof image !== 'string') {
+    res.status(400).json({ error: 'Missing or invalid body field: image (must be a string).' });
     return;
   }
-
+  // 10 MB base64 cap (~7.5 MB decoded) — well under the 15 MB express.json limit
+  if (image.length > 10 * 1024 * 1024) {
+    res.status(413).json({ error: 'Image too large (max 10 MB base64).' });
+    return;
+  }
   const base64 = image.includes(',') ? image.split(',')[1] : image;
+  if (!/^[A-Za-z0-9+/=]+$/.test(base64)) {
+    res.status(400).json({ error: 'Invalid image encoding (expected base64).' });
+    return;
+  }
 
   try {
     const name = await identifyFromGoogleLens(base64);

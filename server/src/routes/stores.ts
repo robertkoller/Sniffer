@@ -72,10 +72,14 @@ function buildAddress(tags: Record<string, string>): string {
 router.get('/stores/nearby', async (req: Request, res: Response) => {
   const lat   = parseFloat(req.query.lat as string);
   const lng   = parseFloat(req.query.lng as string);
-  const brand = (req.query.brand as string) ?? '';
+  const brand = ((req.query.brand as string) ?? '').slice(0, 100).replace(/[\x00-\x1F\x7F]/g, '');
 
   if (isNaN(lat) || isNaN(lng)) {
     res.status(400).json({ error: 'lat and lng are required numeric query params' });
+    return;
+  }
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    res.status(400).json({ error: 'lat must be -90–90 and lng must be -180–180.' });
     return;
   }
 

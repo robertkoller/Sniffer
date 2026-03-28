@@ -1,6 +1,6 @@
 import { ScentDetails, NearbyStore } from './types';
 
-const SERVER_URL = 'http://localhost:3001';
+const SERVER_URL = import.meta.env.VITE_SERVER_URL as string ?? 'http://localhost:3001';
 
 export async function searchCologne(query: string): Promise<ScentDetails | null> {
   const res = await fetch(`${SERVER_URL}/api/search?q=${encodeURIComponent(query)}`);
