@@ -87,7 +87,9 @@ async function scrapeOnePage(
   limit: number,
 ): Promise<Array<{ name: string; price: string; href: string; title: string }>> {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await page.waitForTimeout(3000);
+  // Wait for offer cards to render (they load async); fall through after 12s either way
+  await page.waitForSelector('.br-gOffCard', { timeout: 12000 }).catch(() => {});
+  await page.waitForTimeout(1500);
 
   const raw = await page.evaluate((queryStr: string): Array<{ name: string; price: string; href: string; title: string }> => {
     function hasWrongSize(text: string): boolean {
@@ -198,7 +200,8 @@ async function scrapeOnePage(
 }
 
 export async function scrapeBingShopping(query: string, brand?: string, whoisEnabled = false): Promise<ScrapedSeller[]> {
-  const url = `https://www.bing.com/shop?q=${encodeURIComponent(query)}`;
+  // FORM=SHOPTB is required — without it Bing serves an empty "no shopping results" page
+  const url = `https://www.bing.com/shop?q=${encodeURIComponent(query)}&FORM=SHOPTB`;
   console.log(`[Bing Shopping] Searching: ${url}`);
 
   const browser = await chromium.launch({

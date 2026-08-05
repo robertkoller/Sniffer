@@ -8,6 +8,8 @@ export interface CologneRow {
   notes_middle: string;
   notes_base: string;
   fragrantica_url: string | null;
+  image_url: string | null;
+  note_images: string | null; // JSON map of note name → image URL
   last_scraped_at: number | null;
   created_at: number;
 }
@@ -41,7 +43,29 @@ export interface ScrapedCologne {
     base: string[];
   };
   url: string;
+  imageUrl?: string;
+  noteImages?: Record<string, string>;
 }
+
+// User taste profile — per-account when signed in, else a legacy single-user
+// record in the settings table. Drives search ordering and taste matching.
+export const SCENT_FAMILIES = [
+  'fresh', 'citrus', 'aquatic', 'warm & spicy', 'woody',
+  'sweet & gourmand', 'floral', 'powdery', 'leather', 'green',
+] as const;
+export type ScentFamily = (typeof SCENT_FAMILIES)[number];
+
+export type GenderPreference = 'men' | 'women' | 'all';
+
+export interface UserProfile {
+  genderPreference: GenderPreference;
+  scentFamilies: ScentFamily[];
+}
+
+export const DEFAULT_PROFILE: UserProfile = {
+  genderPreference: 'all',
+  scentFamilies: [],
+};
 
 export interface ScrapedSeller {
   name: string;
@@ -56,11 +80,13 @@ export interface ScentDetails {
   name: string;
   brand: string;
   overview: string;
+  imageUrl?: string;
   notes: {
     top: string[];
     middle: string[];
     base: string[];
   };
+  noteImages?: Record<string, string>;
   onlineSellers: {
     name: string;
     price: string;

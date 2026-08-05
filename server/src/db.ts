@@ -71,7 +71,56 @@ export function initDatabase(): void {
       age_days   INTEGER,
       checked_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      google_sub TEXT    UNIQUE,
+      email      TEXT    UNIQUE NOT NULL,
+      name       TEXT    NOT NULL,
+      picture    TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      token      TEXT    PRIMARY KEY,
+      user_id    INTEGER NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      expires_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS user_libraries (
+      user_id    INTEGER PRIMARY KEY,
+      payload    TEXT    NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      user_id    INTEGER PRIMARY KEY,
+      payload    TEXT    NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS wear_logs (
+      user_id    INTEGER NOT NULL,
+      slug       TEXT    NOT NULL,
+      worn_on    TEXT    NOT NULL, -- YYYY-MM-DD (server date)
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (user_id, slug, worn_on),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
   `);
+
+  // Migrations: columns added to colognes after the initial schema
+  const cologneColumns = db.prepare(`PRAGMA table_info(colognes)`).all() as Array<{ name: string }>;
+  if (!cologneColumns.some(column => column.name === 'image_url')) {
+    db.exec(`ALTER TABLE colognes ADD COLUMN image_url TEXT`);
+  }
+  if (!cologneColumns.some(column => column.name === 'note_images')) {
+    db.exec(`ALTER TABLE colognes ADD COLUMN note_images TEXT`);
+  }
 
   // Seed default settings
   db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('whois_enabled', '0')`).run();
@@ -107,6 +156,11 @@ export function cacheDomainAge(domain: string, ageDays: number | null): void {
   ).run(domain, ageDays);
 }
 
+export function getCologneRowBySlug(slug: string): CologneRow | null {
+  const row = getDb().prepare('SELECT * FROM colognes WHERE slug = ?').get(slug) as CologneRow | undefined;
+  return row ?? null;
+}
+
 export function getCologneBySlug(slug: string): ScentDetails | null {
   const db = getDb();
 
@@ -121,14 +175,14 @@ export function getCologneBySlug(slug: string): ScentDetails | null {
 
 export function saveCologneWithSellers(
   slug: string,
-  cologne: { name: string; brand: string; overview: string; notes: { top: string[]; middle: string[]; base: string[] }; fragrantica_url: string },
+  cologne: { name: string; brand: string; overview: string; notes: { top: string[]; middle: string[]; base: string[] }; fragrantica_url: string; image_url?: string | null; note_images?: string | null },
   sellers: { name: string; price: string; url: string; credibilityScore: number; isTrusted: boolean }[]
 ): ScentDetails {
   const db = getDb();
 
   const insertCologne = db.prepare(`
-    INSERT INTO colognes (slug, name, brand, overview, notes_top, notes_middle, notes_base, fragrantica_url, last_scraped_at)
-    VALUES (@slug, @name, @brand, @overview, @notes_top, @notes_middle, @notes_base, @fragrantica_url, unixepoch())
+    INSERT INTO colognes (slug, name, brand, overview, notes_top, notes_middle, notes_base, fragrantica_url, image_url, note_images, last_scraped_at)
+    VALUES (@slug, @name, @brand, @overview, @notes_top, @notes_middle, @notes_base, @fragrantica_url, @image_url, @note_images, unixepoch())
     ON CONFLICT(slug) DO UPDATE SET
       name            = excluded.name,
       brand           = excluded.brand,
@@ -137,6 +191,8 @@ export function saveCologneWithSellers(
       notes_middle    = excluded.notes_middle,
       notes_base      = excluded.notes_base,
       fragrantica_url = excluded.fragrantica_url,
+      image_url       = COALESCE(excluded.image_url, colognes.image_url),
+      note_images     = COALESCE(excluded.note_images, colognes.note_images),
       last_scraped_at = unixepoch()
   `);
 
@@ -149,6 +205,8 @@ export function saveCologneWithSellers(
     notes_middle: JSON.stringify(cologne.notes.middle),
     notes_base: JSON.stringify(cologne.notes.base),
     fragrantica_url: cologne.fragrantica_url,
+    image_url: cologne.image_url ?? null,
+    note_images: cologne.note_images ?? null,
   });
 
   const cologneRow = db.prepare('SELECT * FROM colognes WHERE slug = ?').get(slug) as CologneRow;
@@ -213,6 +271,118 @@ export function deleteCologne(slug: string): boolean {
   return result.changes > 0;
 }
 
+// User accounts & sessions (shared by Sniffer web and Sniffy mobile)
+
+export interface UserRow {
+  id: number;
+  google_sub: string | null;
+  email: string;
+  name: string;
+  picture: string | null;
+  created_at: number;
+}
+
+export function upsertUser(fields: { googleSub?: string; email: string; name: string; picture?: string }): UserRow {
+  const db = getDb();
+  const email = fields.email.toLowerCase().trim();
+
+  const existing = db.prepare('SELECT * FROM users WHERE (google_sub IS NOT NULL AND google_sub = ?) OR email = ?')
+    .get(fields.googleSub ?? '', email) as UserRow | undefined;
+
+  if (existing) {
+    db.prepare('UPDATE users SET google_sub = COALESCE(?, google_sub), name = ?, picture = COALESCE(?, picture) WHERE id = ?')
+      .run(fields.googleSub ?? null, fields.name, fields.picture ?? null, existing.id);
+  } else {
+    db.prepare('INSERT INTO users (google_sub, email, name, picture) VALUES (?, ?, ?, ?)')
+      .run(fields.googleSub ?? null, email, fields.name, fields.picture ?? null);
+  }
+  return db.prepare('SELECT * FROM users WHERE email = ?').get(email) as UserRow;
+}
+
+const SESSION_TTL_SECONDS = 90 * 24 * 60 * 60; // 90 days
+
+export function createSession(userId: number, token: string): void {
+  getDb().prepare('INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, unixepoch() + ?)')
+    .run(token, userId, SESSION_TTL_SECONDS);
+}
+
+export function getUserByToken(token: string): UserRow | null {
+  const row = getDb().prepare(`
+    SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id
+    WHERE sessions.token = ? AND sessions.expires_at > unixepoch()
+  `).get(token) as UserRow | undefined;
+  return row ?? null;
+}
+
+export function deleteSession(token: string): void {
+  getDb().prepare('DELETE FROM sessions WHERE token = ?').run(token);
+}
+
+export function saveUserLibrary(userId: number, payload: string): void {
+  getDb().prepare(`
+    INSERT INTO user_libraries (user_id, payload, updated_at) VALUES (?, ?, unixepoch())
+    ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload, updated_at = unixepoch()
+  `).run(userId, payload);
+}
+
+export function getUserLibrary(userId: number): string | null {
+  const row = getDb().prepare('SELECT payload FROM user_libraries WHERE user_id = ?').get(userId) as { payload: string } | undefined;
+  return row?.payload ?? null;
+}
+
+export function saveUserProfile(userId: number, payload: string): void {
+  getDb().prepare(`
+    INSERT INTO user_profiles (user_id, payload, updated_at) VALUES (?, ?, unixepoch())
+    ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload, updated_at = unixepoch()
+  `).run(userId, payload);
+}
+
+export function getUserProfile(userId: number): string | null {
+  const row = getDb().prepare('SELECT payload FROM user_profiles WHERE user_id = ?').get(userId) as { payload: string } | undefined;
+  return row?.payload ?? null;
+}
+
+export function listUsersWithLibraries(): Array<UserRow & { payload: string | null }> {
+  return getDb().prepare(`
+    SELECT users.*, user_libraries.payload FROM users
+    LEFT JOIN user_libraries ON user_libraries.user_id = users.id
+    ORDER BY users.created_at ASC
+  `).all() as Array<UserRow & { payload: string | null }>;
+}
+
+// Wear logging is server-authoritative: one wear per fragrance per calendar day.
+// Returns false when a wear was already logged today.
+export function logWearForUser(userId: number, slug: string): boolean {
+  const today = new Date().toISOString().slice(0, 10);
+  const result = getDb().prepare(
+    'INSERT OR IGNORE INTO wear_logs (user_id, slug, worn_on) VALUES (?, ?, ?)',
+  ).run(userId, slug, today);
+  return result.changes > 0;
+}
+
+export interface WearStats {
+  count: number;
+  lastWornOn: string; // YYYY-MM-DD
+}
+
+export function getWearStatsForUser(userId: number): Map<string, WearStats> {
+  const rows = getDb().prepare(
+    'SELECT slug, COUNT(*) as count, MAX(worn_on) as last_worn_on FROM wear_logs WHERE user_id = ? GROUP BY slug',
+  ).all(userId) as Array<{ slug: string; count: number; last_worn_on: string }>;
+  const stats = new Map<string, WearStats>();
+  for (const row of rows) {
+    stats.set(row.slug, { count: row.count, lastWornOn: row.last_worn_on });
+  }
+  return stats;
+}
+
+export function getWearHistoryForUser(userId: number): Array<{ slug: string; wornOn: string }> {
+  const rows = getDb().prepare(
+    'SELECT slug, worn_on FROM wear_logs WHERE user_id = ? ORDER BY worn_on ASC',
+  ).all(userId) as Array<{ slug: string; worn_on: string }>;
+  return rows.map(row => ({ slug: row.slug, wornOn: row.worn_on }));
+}
+
 function buildScentDetails(cologne: CologneRow, sellers: SellerRow[], stores: StoreRow[]): ScentDetails {
   // Compute median price across all sellers for value scoring
   const numericPrices = sellers
@@ -241,6 +411,14 @@ function buildScentDetails(cologne: CologneRow, sellers: SellerRow[], stores: St
     name: cologne.name,
     brand: cologne.brand,
     overview: cologne.overview ?? '',
+    imageUrl: cologne.image_url ?? undefined,
+    noteImages: (() => {
+      try {
+        return cologne.note_images ? JSON.parse(cologne.note_images) as Record<string, string> : undefined;
+      } catch {
+        return undefined;
+      }
+    })(),
     notes: {
       top:    JSON.parse(cologne.notes_top    || '[]'),
       middle: JSON.parse(cologne.notes_middle || '[]'),

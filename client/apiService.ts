@@ -1,6 +1,35 @@
 import { ScentDetails, NearbyStore } from './types';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL as string ?? 'http://localhost:3001';
+export const SERVER_URL = import.meta.env.VITE_SERVER_URL as string ?? 'http://localhost:3001';
+
+// Auth (shared with the Sniffy mobile app)
+
+export interface AuthUser {
+  id: number;
+  email: string;
+  name: string;
+  picture: string | null;
+}
+
+export function googleSignInUrl(): string {
+  return `${SERVER_URL}/api/auth/google/start?return=${encodeURIComponent(window.location.origin + '/')}`;
+}
+
+export async function fetchMe(token: string): Promise<AuthUser> {
+  const res = await fetch(`${SERVER_URL}/api/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error('Session expired');
+  const json = await res.json() as { user: AuthUser };
+  return json.user;
+}
+
+export async function signOutServer(token: string): Promise<void> {
+  await fetch(`${SERVER_URL}/api/auth/logout`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  }).catch(() => {});
+}
 
 export async function searchCologne(query: string): Promise<ScentDetails | null> {
   const res = await fetch(`${SERVER_URL}/api/search?q=${encodeURIComponent(query)}`);

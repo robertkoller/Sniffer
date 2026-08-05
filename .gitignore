@@ -4,3 +4,15 @@ planner.md
 .env.local
 /server/.env
 /client/.env.local
+
+# OS junk
+.DS_Store
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# SQLite runtime database (recreated on server startup; also holds sessions)
+db/sniffer.db
+db/sniffer.db-shm
+db/sniffer.db-wal

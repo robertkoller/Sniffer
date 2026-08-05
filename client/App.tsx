@@ -7,8 +7,10 @@ import ResultsView from './components/ResultsView';
 import HowItWorks from './components/HowItWorks';
 import TrustedSellers from './components/TrustedSellers';
 import FeatureNotReady from './components/FeatureNotReady';
-import { searchCologne, identifyCologneFromImage, getSettings, setWhoisEnabled, setAiSearchEnabled } from './apiService';
+import { searchCologne, identifyCologneFromImage, getSettings, setWhoisEnabled, setAiSearchEnabled, googleSignInUrl, fetchMe, signOutServer, AuthUser } from './apiService';
 import { ScentDetails } from './types';
+
+const AUTH_TOKEN_KEY = 'sniffer:authToken';
 
 type ViewState = 'home' | 'results' | 'how-it-works' | 'trusted-sellers' | 'feature-not-ready';
 
@@ -21,6 +23,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [whoisEnabled, setWhoisEnabledState] = useState(false);
   const [aiSearchEnabled, setAiSearchEnabledState] = useState(false);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
 
   useEffect(() => {
     getSettings().then(s => {
@@ -28,6 +31,33 @@ const App: React.FC = () => {
       setAiSearchEnabledState(s.aiSearchEnabled);
     }).catch(() => {});
   }, []);
+
+  // Session restore + capture ?token= coming back from the Google flow
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const incomingToken = params.get('token');
+    if (incomingToken) {
+      localStorage.setItem(AUTH_TOKEN_KEY, incomingToken);
+      params.delete('token');
+      const remaining = params.toString();
+      window.history.replaceState({}, '', window.location.pathname + (remaining ? `?${remaining}` : ''));
+    }
+    const token = localStorage.getItem(AUTH_TOKEN_KEY);
+    if (token) {
+      fetchMe(token)
+        .then(setAuthUser)
+        .catch(() => localStorage.removeItem(AUTH_TOKEN_KEY));
+    }
+  }, []);
+
+  const handleSignOut = () => {
+    const token = localStorage.getItem(AUTH_TOKEN_KEY);
+    if (token) {
+      signOutServer(token);
+    }
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    setAuthUser(null);
+  };
 
   const handleToggleWhois = async () => {
     const next = !whoisEnabled;
@@ -187,12 +217,31 @@ const App: React.FC = () => {
           >
             Trusted Sellers
           </button>
-          <button 
-            onClick={() => triggerFeatureNotReady('Sign In')}
-            className="px-5 py-2 bg-amber-50 text-amber-900 rounded-full hover:bg-amber-100 transition-colors font-bold uppercase text-[10px] tracking-widest"
-          >
-            Sign In
-          </button>
+          {authUser ? (
+            <div className="flex items-center gap-3">
+              {authUser.picture ? (
+                <img src={authUser.picture} alt={authUser.name} className="w-8 h-8 rounded-full border border-amber-200" />
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-amber-900 text-white flex items-center justify-center text-xs font-bold">
+                  {authUser.name.slice(0, 1).toUpperCase()}
+                </div>
+              )}
+              <span className="text-amber-900 font-bold text-sm">{authUser.name}</span>
+              <button
+                onClick={handleSignOut}
+                className="px-4 py-2 bg-amber-50 text-amber-900 rounded-full hover:bg-amber-100 transition-colors font-bold uppercase text-[10px] tracking-widest"
+              >
+                Sign Out
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => { window.location.href = googleSignInUrl(); }}
+              className="px-5 py-2 bg-amber-50 text-amber-900 rounded-full hover:bg-amber-100 transition-colors font-bold uppercase text-[10px] tracking-widest"
+            >
+              Sign In
+            </button>
+          )}
         </div>
       </nav>
 

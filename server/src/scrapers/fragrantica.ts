@@ -5,6 +5,25 @@ const BASE_URL = 'https://www.fragrantica.com';
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Wait for intercepted results instead of sleeping a fixed 8s: polls until the
+// condition holds, then gives a short grace window for stragglers.
+async function waitForResults(check: () => boolean, maxWaitMs: number, graceMs = 700): Promise<void> {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    if (check()) {
+      await delay(graceMs);
+      return;
+    }
+    await delay(250);
+  }
+}
+
+// Fragrantica's image CDN allows hotlinking; images follow a fixed id-based pattern.
+function imageUrlForPerfumeId(id: unknown): string | undefined {
+  const numericId = String(id ?? '').replace(/[^0-9]/g, '');
+  return numericId ? `https://fimgs.net/mdimg/perfume/375x500.${numericId}.jpg` : undefined;
+}
+
 // Common fragrance brand abbreviations users type that don't match Fragrantica's full brand names
 const BRAND_ALIASES: Record<string, string> = {
   'mfk':  'maison francis kurkdjian',
@@ -15,6 +34,12 @@ const BRAND_ALIASES: Record<string, string> = {
   'mm':   'maison margiela',
   'adp':  'acqua di parma',
   'lb':   'le labo',
+  'jpg':  'jean paul gaultier',
+  'pdm':  'parfums de marly',
+  'adg':  'giorgio armani acqua di gio',
+  'd&g':  'dolce gabbana',
+  'ck':   'calvin klein',
+  'ch':   'carolina herrera',
 };
 
 function expandAbbreviations(query: string): string {
@@ -27,8 +52,88 @@ function expandAbbreviations(query: string): string {
   return q;
 }
 
+export interface FragranceSuggestion {
+  id: string;
+  name: string;
+  brand: string;
+  year?: number;
+  gender?: string;
+  thumbnail?: string;
+  imageUrl?: string;
+  url: string;
+}
+
+// Lightweight multi-result search: load the Fragrantica search page once and
+// return the Algolia hits in relevance order (deduplicated across indexes).
+export async function suggestFragrantica(query: string, limit = 12): Promise<FragranceSuggestion[]> {
+  const expandedQuery = expandAbbreviations(query);
+  console.log(`[Fragrantica] Suggesting for: "${expandedQuery}"`);
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 900 },
+    locale: 'en-US',
+  });
+  const page = await context.newPage();
+
+  const seenIds = new Set<string>();
+  const suggestions: FragranceSuggestion[] = [];
+
+  page.on('response', async response => {
+    if (!response.url().includes('algolia.net')) return;
+    try {
+      const json = await response.json() as {
+        results?: Array<{ hits?: Array<Record<string, unknown>> }>;
+        hits?: Array<Record<string, unknown>>;
+      };
+      const allHits: Array<Record<string, unknown>> = [];
+      if (json?.results?.length) {
+        for (const result of json.results) {
+          if (result.hits?.length) allHits.push(...result.hits);
+        }
+      } else if (json?.hits?.length) {
+        allHits.push(...json.hits);
+      }
+
+      for (const hit of allHits) {
+        const id = String(hit['objectID'] ?? hit['id'] ?? '');
+        const name = String(hit['naslov'] ?? '');
+        const brand = String(hit['dizajner'] ?? '');
+        if (!id || !name || seenIds.has(id)) continue;
+        seenIds.add(id);
+
+        const slug = hit['slug'] as string | undefined;
+        suggestions.push({
+          id,
+          name,
+          brand,
+          year: typeof hit['godina'] === 'number' ? hit['godina'] as number : undefined,
+          gender: typeof hit['spol'] === 'string' ? hit['spol'] as string : undefined,
+          thumbnail: typeof hit['thumbnail'] === 'string' ? hit['thumbnail'] as string : undefined,
+          imageUrl: imageUrlForPerfumeId(id),
+          url: slug ? `${BASE_URL}/perfume/${slug}-${id}.html` : `${BASE_URL}/search/?query=${encodeURIComponent(name)}`,
+        });
+      }
+    } catch {
+      // Not a search response — ignore
+    }
+  });
+
+  try {
+    await page.goto(`${BASE_URL}/search/?query=${encodeURIComponent(expandedQuery)}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
+    await waitForResults(() => suggestions.length >= 3, 8000);
+    return suggestions.slice(0, limit);
+  } finally {
+    await browser.close();
+  }
+}
+
 // Search Fragrantica — intercept the Algolia response the browser makes
-async function searchFragranticaPage(query: string): Promise<{ name: string; brand: string; cologneUrl: string } | null> {
+async function searchFragranticaPage(query: string): Promise<{ name: string; brand: string; cologneUrl: string; imageUrl?: string } | null> {
   // Expand abbreviations so "mfk grand soir" gives you "Maison Francis Kurkdjian Grand Soir"
   const expandedQuery = expandAbbreviations(query);
 
@@ -40,7 +145,7 @@ async function searchFragranticaPage(query: string): Promise<{ name: string; bra
   });
   const page = await context.newPage();
 
-  let bestHit: { name: string; brand: string; cologneUrl: string } | null = null;
+  let bestHit: { name: string; brand: string; cologneUrl: string; imageUrl?: string } | null = null;
   let bestScore = Infinity;
 
   // Gendered suffixes that indicate a women's/unisex variant
@@ -115,7 +220,12 @@ async function searchFragranticaPage(query: string): Promise<{ name: string; bra
         const score = matchScore(name, brand, expandedQuery);
         if (score < bestScore) {
           bestScore = score;
-          bestHit   = { name, brand, cologneUrl: extractHitUrl(hit) };
+          bestHit   = {
+            name,
+            brand,
+            cologneUrl: extractHitUrl(hit),
+            imageUrl: imageUrlForPerfumeId(hit['objectID'] ?? hit['id']),
+          };
         }
       }
 
@@ -132,7 +242,7 @@ async function searchFragranticaPage(query: string): Promise<{ name: string; bra
         const specificWords = qWords.filter(w => w.length > 2 && !GENERIC_WORDS.has(w));
 
         let bestPartialCount = 0;
-        let bestPartialHit: { name: string; brand: string; cologneUrl: string } | null = null;
+        let bestPartialHit: { name: string; brand: string; cologneUrl: string; imageUrl?: string } | null = null;
 
         for (const hit of allHits) {
           const name  = String(hit['naslov'] ?? '');
@@ -142,7 +252,12 @@ async function searchFragranticaPage(query: string): Promise<{ name: string; bra
           const matchCount = specificWords.filter(w => combined.includes(w)).length;
           if (matchCount > bestPartialCount) {
             bestPartialCount = matchCount;
-            bestPartialHit = { name, brand, cologneUrl: extractHitUrl(hit) };
+            bestPartialHit = {
+              name,
+              brand,
+              cologneUrl: extractHitUrl(hit),
+              imageUrl: imageUrlForPerfumeId(hit['objectID'] ?? hit['id']),
+            };
           }
         }
 
@@ -155,22 +270,24 @@ async function searchFragranticaPage(query: string): Promise<{ name: string; bra
   });
 
   try {
-    await page.goto(`${BASE_URL}/search/?query=${encodeURIComponent(query)}`, {
+    // Search with the expanded query so aliases like "jpg" actually reach Fragrantica
+    await page.goto(`${BASE_URL}/search/?query=${encodeURIComponent(expandedQuery)}`, {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
-    // Wait for the Algolia response to come back
-    await page.waitForTimeout(8000);
+    // Wait for the Algolia response — exit early once a match lands
+    await waitForResults(() => bestHit !== null, 8000);
     return bestHit;
   } finally {
     await browser.close();
   }
 }
 
-// Detail page scraper from Playright
+// Detail page scraper from Playwright
 async function scrapeDetailPage(cologneUrl: string): Promise<{
   overview: string;
   notes: { top: string[]; middle: string[]; base: string[] };
+  noteImages: Record<string, string>;
 }> {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
@@ -182,7 +299,20 @@ async function scrapeDetailPage(cologneUrl: string): Promise<{
 
   try {
     await page.goto(cologneUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(3000);
+    // Poll for real note links (e.g. /notes/Bergamot-75.html) rather than a fixed
+    // sleep. The bare "/notes/" category link is in the static HTML immediately, so
+    // we must wait specifically for the note pyramid's individual note links.
+    const deadline = Date.now() + 6000;
+    while (Date.now() < deadline) {
+      const realNoteCount = await page.evaluate(
+        () => Array.from(document.querySelectorAll('a[href*="/notes/"]'))
+          .filter(a => /\/notes\/.+-\d+\.html/.test((a as HTMLAnchorElement).href)).length,
+      ).catch(() => 0);
+      if (realNoteCount > 0) {
+        break;
+      }
+      await delay(250);
+    }
 
     const data = await page.evaluate(() => {
       // Overview
@@ -217,7 +347,9 @@ async function scrapeDetailPage(cologneUrl: string): Promise<{
       });
 
       // Assign each note link to a category based on which heading last preceded it.
+      // Also grab each note's thumbnail image (Fragrantica renders one per link).
       const seen = new Set<string>();
+      const noteImages: Record<string, string> = {};
       allEls.forEach((el, i) => {
         if (el.tagName !== 'A') return;
         const href = (el as HTMLAnchorElement).href ?? '';
@@ -225,6 +357,11 @@ async function scrapeDetailPage(cologneUrl: string): Promise<{
         const noteName = el.textContent?.trim() ?? '';
         if (!noteName || seen.has(noteName) || EXCLUDED.has(noteName.toLowerCase())) return;
         seen.add(noteName);
+
+        const imgEl = (el.querySelector('img') ?? el.parentElement?.querySelector('img')) as HTMLImageElement | null;
+        if (imgEl?.src && imgEl.src.startsWith('http')) {
+          noteImages[noteName] = imgEl.src;
+        }
 
         // Category = the last heading that appeared before this link in DOM order
         let cat: 'top' | 'middle' | 'base' = 'top'; // default
@@ -237,7 +374,7 @@ async function scrapeDetailPage(cologneUrl: string): Promise<{
         else notesBase.push(noteName);
       });
 
-      return { overview, notesTop, notesMiddle, notesBase };
+      return { overview, notesTop, notesMiddle, notesBase, noteImages };
     });
 
     const clean = (arr: string[]) =>
@@ -250,10 +387,21 @@ async function scrapeDetailPage(cologneUrl: string): Promise<{
     return {
       overview,
       notes: { top: clean(data.notesTop), middle: clean(data.notesMiddle), base: clean(data.notesBase) },
+      noteImages: data.noteImages,
     };
   } finally {
     await browser.close();
   }
+}
+
+// Detail-only scrape for when the fragrance page URL is already known
+// (e.g. from a /api/suggest hit) — skips the search step entirely.
+export async function scrapeFragranticaDetail(cologneUrl: string): Promise<{
+  overview: string;
+  notes: { top: string[]; middle: string[]; base: string[] };
+  noteImages: Record<string, string>;
+}> {
+  return scrapeDetailPage(cologneUrl);
 }
 
 // Public entry point for scraping Fragrantica — returns null if no good match found
@@ -268,13 +416,15 @@ export async function scrapeFragrantica(query: string): Promise<ScrapedCologne> 
   console.log(`[Fragrantica] Found: ${result.brand} - ${result.name} → ${result.cologneUrl}`);
   await delay(500);
 
-  const { overview, notes } = await scrapeDetailPage(result.cologneUrl);
+  const { overview, notes, noteImages } = await scrapeDetailPage(result.cologneUrl);
 
   return {
     name:     result.name,
     brand:    result.brand,
     overview,
     notes,
+    noteImages,
     url:      result.cologneUrl,
+    imageUrl: result.imageUrl,
   };
 }
