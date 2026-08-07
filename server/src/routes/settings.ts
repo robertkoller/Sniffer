@@ -1,27 +1,12 @@
 import { Router, Request, Response } from 'express';
-import { getSetting, setSetting } from '../db';
+import { whoisEnabled } from '../utils/flags';
 
 const router = Router();
 
+// WHOIS is controlled by the WHOIS_ENABLED env var (on by default). This just
+// reports the current state for anyone who wants to check it.
 router.get('/settings', (_req: Request, res: Response) => {
-  res.json({
-    whoisEnabled:     getSetting('whois_enabled') === '1',
-    aiSearchEnabled:  getSetting('ai_search_enabled') === '1',
-  });
-});
-
-router.post('/settings/whois', (req: Request, res: Response) => {
-  const { enabled } = req.body as { enabled: boolean };
-  setSetting('whois_enabled', enabled ? '1' : '0');
-  console.log(`[Settings] WHOIS domain-age checking ${enabled ? 'enabled' : 'disabled'}`);
-  res.json({ whoisEnabled: enabled });
-});
-
-router.post('/settings/ai', (req: Request, res: Response) => {
-  const { enabled } = req.body as { enabled: boolean };
-  setSetting('ai_search_enabled', enabled ? '1' : '0');
-  console.log(`[Settings] AI seller search ${enabled ? 'enabled' : 'disabled'}`);
-  res.json({ aiSearchEnabled: enabled });
+  res.json({ whoisEnabled: whoisEnabled() });
 });
 
 export default router;

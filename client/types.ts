@@ -37,6 +37,34 @@ export interface ScentDetails {
   uncertaintyWarning?: string;
 }
 
+// Fast fragrance info from /api/info — notes/overview/image, NO sellers. Lets
+// the results page render immediately while prices load separately.
+export interface FragranceInfo {
+  name: string;
+  brand: string;
+  overview: string;
+  imageUrl?: string;
+  notes: {
+    top: string[];
+    middle: string[];
+    base: string[];
+  };
+  noteImages?: Record<string, string>;
+}
+
+// A single match from the fast /api/suggest endpoint. Users pick one of these
+// before we run the slow price scrape. Shape mirrors the server + mobile app.
+export interface FragranceSuggestion {
+  id: string;
+  name: string;
+  brand: string;
+  year?: number;
+  gender?: string;
+  thumbnail?: string;
+  imageUrl?: string;
+  url: string;
+}
+
 export interface NearbyStore {
   name: string;
   address: string;

@@ -1,36 +1,46 @@
 
 import React, { useState, useEffect } from 'react';
-import { Search, Shield, Sparkles } from 'lucide-react';
+import { Search } from 'lucide-react';
 import SearchHeader from './components/SearchHeader';
 import PopularScents from './components/PopularScents';
 import ResultsView from './components/ResultsView';
+import SuggestionList from './components/SuggestionList';
 import HowItWorks from './components/HowItWorks';
 import TrustedSellers from './components/TrustedSellers';
 import FeatureNotReady from './components/FeatureNotReady';
-import { searchCologne, identifyCologneFromImage, getSettings, setWhoisEnabled, setAiSearchEnabled, googleSignInUrl, fetchMe, signOutServer, AuthUser } from './apiService';
-import { ScentDetails } from './types';
+import Settings from './components/Settings';
+import { searchCologne, suggestCologne, fetchFragranceInfo, fetchPrices, identifyCologneFromImage, googleSignInUrl, fetchMe, signOutServer, clearSuggestionCache, AUTH_TOKEN_KEY, AuthUser } from './apiService';
+import { ScentDetails, FragranceSuggestion, FragranceInfo } from './types';
 
-const AUTH_TOKEN_KEY = 'sniffer:authToken';
+// Build a partial ScentDetails from fast /api/info data — sellers fill in later.
+function infoToScentDetails(info: FragranceInfo): ScentDetails {
+  return {
+    name: info.name,
+    brand: info.brand,
+    overview: info.overview,
+    notes: info.notes,
+    onlineSellers: [],
+    physicalStores: [],
+    imagePrompt: `${info.brand} ${info.name}`,
+    exists: true,
+    isUncertain: false,
+  };
+}
 
-type ViewState = 'home' | 'results' | 'how-it-works' | 'trusted-sellers' | 'feature-not-ready';
+type ViewState = 'home' | 'suggestions' | 'results' | 'how-it-works' | 'trusted-sellers' | 'feature-not-ready' | 'settings';
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewState>('home');
   const [activeFeatureName, setActiveFeatureName] = useState('');
   const [results, setResults] = useState<ScentDetails | null>(null);
+  const [suggestions, setSuggestions] = useState<FragranceSuggestion[]>([]);
+  const [lastQuery, setLastQuery] = useState('');
+  const [loadingSuggestionId, setLoadingSuggestionId] = useState<string | null>(null);
+  const [pricesLoading, setPricesLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [whoisEnabled, setWhoisEnabledState] = useState(false);
-  const [aiSearchEnabled, setAiSearchEnabledState] = useState(false);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
-
-  useEffect(() => {
-    getSettings().then(s => {
-      setWhoisEnabledState(s.whoisEnabled);
-      setAiSearchEnabledState(s.aiSearchEnabled);
-    }).catch(() => {});
-  }, []);
 
   // Session restore + capture ?token= coming back from the Google flow
   useEffect(() => {
@@ -45,7 +55,11 @@ const App: React.FC = () => {
     const token = localStorage.getItem(AUTH_TOKEN_KEY);
     if (token) {
       fetchMe(token)
-        .then(setAuthUser)
+        .then(user => {
+          setAuthUser(user);
+          // Re-fetch searches with this account's ordering, not any logged-out order
+          clearSuggestionCache();
+        })
         .catch(() => localStorage.removeItem(AUTH_TOKEN_KEY));
     }
   }, []);
@@ -57,37 +71,76 @@ const App: React.FC = () => {
     }
     localStorage.removeItem(AUTH_TOKEN_KEY);
     setAuthUser(null);
+    clearSuggestionCache();
   };
 
-  const handleToggleWhois = async () => {
-    const next = !whoisEnabled;
-    setWhoisEnabledState(next);
-    await setWhoisEnabled(next).catch(() => setWhoisEnabledState(!next));
-  };
-
-  const handleToggleAi = async () => {
-    const next = !aiSearchEnabled;
-    setAiSearchEnabledState(next);
-    await setAiSearchEnabled(next).catch(() => setAiSearchEnabledState(!next));
-  };
-
+  // Step 1: fast fuzzy search — show a list of matching colognes to pick from.
   const handleSearch = async (query: string) => {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      return;
+    }
     setIsLoading(true);
     setError(null);
-    setStatusMessage("Searching...");
+    setStatusMessage("Sniffing around...");
+    setLastQuery(trimmed);
     try {
-      const data = await searchCologne(query);
-      if (data) {
-        setResults(data);
-        setCurrentView('results');
+      const matches = await suggestCologne(trimmed);
+      if (matches.length > 0) {
+        setSuggestions(matches);
+        setCurrentView('suggestions');
       } else {
-        setError("Could not find details for that scent. Try something else!");
+        setError("Could not find any scents matching that. Try something else!");
       }
     } catch (e) {
       setError("Something went wrong. Please try again later.");
     } finally {
       setIsLoading(false);
       setStatusMessage(null);
+    }
+  };
+
+  // Step 2: user picked a cologne. Render the page from fast /api/info (notes +
+  // overview, ~3-5s) while the seller prices load separately in the background —
+  // so the results page appears almost immediately instead of after a ~45s scrape.
+  const handleSelectSuggestion = async (suggestion: FragranceSuggestion) => {
+    setLoadingSuggestionId(suggestion.id);
+    setError(null);
+
+    // Kick off the price scrape immediately, in parallel — don't block render on it.
+    const pricesPromise = fetchPrices(suggestion.brand, suggestion.name).catch(() => null);
+
+    try {
+      const info = await fetchFragranceInfo(suggestion);
+      setResults(infoToScentDetails(info));
+      setPricesLoading(true);
+      setCurrentView('results');
+
+      // Stream sellers in when the scrape finishes (attached after results is set,
+      // so the functional update always merges onto the rendered cologne).
+      pricesPromise.then(sellers => {
+        if (sellers) {
+          setResults(prev => (prev ? { ...prev, onlineSellers: sellers } : prev));
+        }
+        setPricesLoading(false);
+      });
+    } catch (e) {
+      // Info scrape failed — fall back to the full (slower) search, which returns
+      // everything including sellers, so the pick still works.
+      try {
+        const data = await searchCologne(`${suggestion.brand} ${suggestion.name}`);
+        if (data) {
+          setResults(data);
+          setPricesLoading(false);
+          setCurrentView('results');
+        } else {
+          setError("Could not load that scent. Try another match.");
+        }
+      } catch {
+        setError("Something went wrong. Please try again.");
+      }
+    } finally {
+      setLoadingSuggestionId(null);
     }
   };
 
@@ -114,8 +167,17 @@ const App: React.FC = () => {
 
   const navigateToHome = () => {
     setResults(null);
+    setSuggestions([]);
+    setLastQuery('');
     setError(null);
+    setPricesLoading(false);
     setCurrentView('home');
+  };
+
+  // Back from the full price view to the list of matches the user was choosing from
+  const navigateToSuggestions = () => {
+    setError(null);
+    setCurrentView(suggestions.length > 0 ? 'suggestions' : 'home');
   };
 
   const triggerFeatureNotReady = (name: string) => {
@@ -125,14 +187,40 @@ const App: React.FC = () => {
 
   const renderContent = () => {
     switch (currentView) {
+      case 'suggestions':
+        return (
+          <>
+            <SuggestionList
+              query={lastQuery}
+              suggestions={suggestions}
+              onSelect={handleSelectSuggestion}
+              onBack={navigateToHome}
+              loadingId={loadingSuggestionId}
+            />
+            {(error || loadingSuggestionId) && (
+              <div className="max-w-4xl mx-auto px-6 pb-8 flex justify-center">
+                {loadingSuggestionId && !error ? (
+                  <div className="flex items-center gap-3 px-6 py-2 bg-amber-50 border border-amber-100 rounded-full text-amber-900/60 text-xs font-bold uppercase tracking-widest animate-pulse">
+                    <div className="w-2 h-2 bg-amber-500 rounded-full animate-ping" />
+                    Fetching live prices — first look can take up to a minute
+                  </div>
+                ) : error ? (
+                  <p className="text-rose-500 font-bold uppercase text-[10px] tracking-widest">{error}</p>
+                ) : null}
+              </div>
+            )}
+          </>
+        );
+
       case 'results':
         return results ? (
-          <ResultsView 
-            data={results} 
-            onBack={navigateToHome} 
+          <ResultsView
+            data={results}
+            onBack={navigateToSuggestions}
+            pricesLoading={pricesLoading}
           />
         ) : null;
-      
+
       case 'how-it-works':
         return <HowItWorks onBack={navigateToHome} />;
 
@@ -141,6 +229,16 @@ const App: React.FC = () => {
       
       case 'feature-not-ready':
         return <FeatureNotReady featureName={activeFeatureName} onBack={navigateToHome} />;
+
+      case 'settings':
+        return authUser ? (
+          <Settings
+            user={authUser}
+            onBack={navigateToHome}
+            onSignOut={() => { handleSignOut(); navigateToHome(); }}
+            onProfileChange={clearSuggestionCache}
+          />
+        ) : null;
 
       case 'home':
       default:
@@ -218,22 +316,20 @@ const App: React.FC = () => {
             Trusted Sellers
           </button>
           {authUser ? (
-            <div className="flex items-center gap-3">
+            <button
+              onClick={() => setCurrentView('settings')}
+              title="Settings"
+              className={`flex items-center gap-3 group ${currentView === 'settings' ? 'opacity-100' : ''}`}
+            >
               {authUser.picture ? (
-                <img src={authUser.picture} alt={authUser.name} className="w-8 h-8 rounded-full border border-amber-200" />
+                <img src={authUser.picture} alt={authUser.name} className="w-8 h-8 rounded-full border border-amber-200 group-hover:border-amber-400 transition-colors" />
               ) : (
                 <div className="w-8 h-8 rounded-full bg-amber-900 text-white flex items-center justify-center text-xs font-bold">
                   {authUser.name.slice(0, 1).toUpperCase()}
                 </div>
               )}
-              <span className="text-amber-900 font-bold text-sm">{authUser.name}</span>
-              <button
-                onClick={handleSignOut}
-                className="px-4 py-2 bg-amber-50 text-amber-900 rounded-full hover:bg-amber-100 transition-colors font-bold uppercase text-[10px] tracking-widest"
-              >
-                Sign Out
-              </button>
-            </div>
+              <span className={`font-bold text-sm transition-colors ${currentView === 'settings' ? 'text-amber-900' : 'text-amber-900/70 group-hover:text-amber-900'}`}>{authUser.name}</span>
+            </button>
           ) : (
             <button
               onClick={() => { window.location.href = googleSignInUrl(); }}
@@ -259,39 +355,6 @@ const App: React.FC = () => {
               <span className="serif text-xl font-bold text-amber-900">sniffer</span>
             </div>
             <p className="text-amber-900/30 text-[10px] font-bold uppercase tracking-widest">© 2025 Sniffer Fragrance Search. All scents intended for discovery.</p>
-          </div>
-          <div className="flex flex-col items-end gap-6">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={handleToggleAi}
-                className={`flex items-center gap-3 px-5 py-3 rounded-2xl border transition-all text-xs font-bold uppercase tracking-widest ${
-                  aiSearchEnabled
-                    ? 'bg-amber-700 text-white border-amber-700'
-                    : 'bg-white text-amber-900/50 border-amber-100 hover:border-amber-300 hover:text-amber-900'
-                }`}
-              >
-                <Sparkles className="w-4 h-4" />
-                AI Search {aiSearchEnabled ? 'On' : 'Off'}
-              </button>
-              <button
-                onClick={handleToggleWhois}
-                className={`flex items-center gap-3 px-5 py-3 rounded-2xl border transition-all text-xs font-bold uppercase tracking-widest ${
-                  whoisEnabled
-                    ? 'bg-amber-900 text-white border-amber-900'
-                    : 'bg-white text-amber-900/50 border-amber-100 hover:border-amber-300 hover:text-amber-900'
-                }`}
-              >
-                <Shield className="w-4 h-4" />
-                WHOIS {whoisEnabled ? 'On' : 'Off'}
-              </button>
-            </div>
-            <p className="text-amber-900/30 text-[9px] uppercase tracking-widest text-right max-w-[260px]">
-              {aiSearchEnabled
-                ? 'AI finds seller pages, scraper extracts prices. Slower but more thorough.'
-                : whoisEnabled
-                  ? 'Domain age checked on new searches. Adds ~5s.'
-                  : 'AI Search uses Gemini to find retailers. WHOIS checks domain age.'}
-            </p>
           </div>
           <div className="flex gap-12">
             <div className="space-y-4">

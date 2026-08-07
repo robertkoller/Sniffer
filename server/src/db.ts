@@ -122,9 +122,8 @@ export function initDatabase(): void {
     db.exec(`ALTER TABLE colognes ADD COLUMN note_images TEXT`);
   }
 
-  // Seed default settings
-  db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('whois_enabled', '0')`).run();
-  db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('ai_search_enabled', '0')`).run();
+  // The settings table now only holds the legacy single-user taste profile;
+  // WHOIS is env-controlled and the AI search feature was removed.
 
   console.log('Database ready:', DB_PATH);
 }

@@ -35,6 +35,7 @@ function getStockLikelihood(brand: string, retailer: string): 'likely' | 'uncert
 interface ResultsViewProps {
   data: ScentDetails;
   onBack: () => void;
+  pricesLoading?: boolean;
 }
 
 const CredibilityBadge: React.FC<{ score: number }> = ({ score }) => {
@@ -51,7 +52,7 @@ const CredibilityBadge: React.FC<{ score: number }> = ({ score }) => {
   );
 };
 
-const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
+const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack, pricesLoading = false }) => {
   const [showAllSellers, setShowAllSellers] = useState(false);
   const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [isLocating, setIsLocating] = useState(false);
@@ -275,11 +276,48 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack }) => {
               <IconAnim><ShoppingBag className="w-8 h-8 text-amber-700" /></IconAnim>
               Price Sniffer
             </h2>
-            <div className="hidden sm:flex items-center gap-2 px-4 py-2 bg-emerald-50 rounded-full border border-emerald-100 text-emerald-800 text-[10px] font-black uppercase tracking-widest">
-              <CheckCircle2 className="w-4 h-4" />
-              Showing {sortedSellers.length} Sellers
-            </div>
+            {pricesLoading && sortedSellers.length === 0 ? (
+              <div className="hidden sm:flex items-center gap-2 px-4 py-2 bg-amber-50 rounded-full border border-amber-100 text-amber-700 text-[10px] font-black uppercase tracking-widest animate-pulse">
+                <div className="w-3 h-3 border-2 border-amber-300 border-t-amber-700 rounded-full animate-spin" />
+                Finding best prices…
+              </div>
+            ) : (
+              <div className="hidden sm:flex items-center gap-2 px-4 py-2 bg-emerald-50 rounded-full border border-emerald-100 text-emerald-800 text-[10px] font-black uppercase tracking-widest">
+                <CheckCircle2 className="w-4 h-4" />
+                Showing {sortedSellers.length} Sellers
+              </div>
+            )}
           </div>
+
+          {/* Prices still scraping — skeleton placeholders keep the layout stable */}
+          {pricesLoading && sortedSellers.length === 0 && (
+            <div className="grid gap-6 overflow-visible">
+              {[0, 1, 2, 3].map(i => (
+                <div key={i} className="pt-8">
+                  <div className="bg-white p-7 rounded-[2.2rem] border border-amber-100/50 flex items-center justify-between gap-6 animate-pulse">
+                    <div className="flex items-center gap-6">
+                      <div className="w-14 h-14 rounded-2xl bg-amber-50" />
+                      <div className="space-y-2">
+                        <div className="h-4 w-40 bg-amber-50 rounded-full" />
+                        <div className="h-3 w-24 bg-amber-50/70 rounded-full" />
+                      </div>
+                    </div>
+                    <div className="h-8 w-24 bg-amber-50 rounded-xl" />
+                  </div>
+                </div>
+              ))}
+              <p className="text-center text-amber-900/40 text-[10px] font-black uppercase tracking-[0.2em] pt-2">
+                Live-checking sellers — first look can take up to a minute
+              </p>
+            </div>
+          )}
+
+          {/* Prices done but none found */}
+          {!pricesLoading && sortedSellers.length === 0 && (
+            <div className="p-10 rounded-[2.5rem] bg-amber-50/40 border border-amber-100 text-center">
+              <p className="text-amber-900/60 font-medium">No online sellers found for this one right now.</p>
+            </div>
+          )}
 
           <div className="grid gap-6 overflow-visible">
             {displayedSellers.map((seller, i) => {

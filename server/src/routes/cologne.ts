@@ -1,13 +1,11 @@
 import { Router, Request, Response } from 'express';
-import { getCologneBySlug, getCologneRowBySlug, saveCologneWithSellers, updateSellersForCologne, getSetting } from '../db';
+import { getCologneBySlug, getCologneRowBySlug, saveCologneWithSellers, updateSellersForCologne } from '../db';
 import { scrapeFragrantica, scrapeFragranticaDetail, suggestFragrantica, type FragranceSuggestion } from '../scrapers/fragrantica';
 import { scrapeBingShopping } from '../scrapers/bingShopping';
 import { scrapeAllSites } from '../scrapers/siteScrapers';
-import { findSellerSites } from '../scrapers/aiSellerSearch';
-import { scrapeDirectPrices } from '../scrapers/directPriceScraper';
-import { computeReferencePrice } from '../scrapers/trustScorer';
 import { identifyFromGoogleLens } from '../scrapers/googleLens';
 import { generateSlug, canonicalSlug } from '../utils/slug';
+import { whoisEnabled } from '../utils/flags';
 import { profileForRequest } from './profile';
 import type { ScrapedSeller } from '../types';
 
@@ -183,6 +181,46 @@ router.get('/info', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/prices?brand=&name= — sellers only for an already-identified cologne.
+// The web pick flow calls this AFTER /api/info has rendered the page, so prices
+// stream in without blocking. Skips Fragrantica entirely, and uses Bing only
+// (fast, ~12s) rather than the slow retail-site scrapers — the daily job does the
+// thorough scrape. Warm-cached: once a cologne has sellers, returns instantly.
+router.get('/prices', async (req: Request, res: Response) => {
+  const brand = ((req.query.brand as string) ?? '').trim();
+  const name  = ((req.query.name as string) ?? '').trim();
+  if (!brand || !name) {
+    res.status(400).json({ error: 'Missing brand or name.' });
+    return;
+  }
+  const slug = canonicalSlug(brand, name);
+
+  // Warm cache: if this cologne already has sellers (from a prior pick or the
+  // daily job), return them instantly — no scrape.
+  const cached = getCologneBySlug(slug);
+  if (cached && cached.onlineSellers.length > 0) {
+    res.json({ onlineSellers: cached.onlineSellers });
+    return;
+  }
+
+  try {
+    const bingSellers = await scrapeBingShopping(`${brand} ${name}`, brand, whoisEnabled());
+
+    // Cache onto the cologne row if it exists yet (/api/info creates it in parallel).
+    const row = getCologneRowBySlug(slug);
+    if (row) {
+      updateSellersForCologne(row.id, bingSellers);
+      const rebuilt = getCologneBySlug(slug);
+      res.json({ onlineSellers: rebuilt?.onlineSellers ?? [] });
+      return;
+    }
+    res.json({ onlineSellers: bingSellers });
+  } catch (err) {
+    console.error('[Prices] Failed:', err);
+    res.status(502).json({ error: 'Could not load prices. Try again shortly.' });
+  }
+});
+
 // GET /api/search?q=Dior+Sauvage
 router.get('/search', async (req: Request, res: Response) => {
   const raw = (req.query.q as string)?.trim() ?? '';
@@ -210,13 +248,11 @@ router.get('/search', async (req: Request, res: Response) => {
     return;
   }
 
-  const whoisEnabled    = getSetting('whois_enabled') === '1';
-
   if (cached) {
     console.log(`[Search] Info cached but no sellers — scraping sellers for "${cached.brand} ${cached.name}"`);
     try {
       const [bingResult, siteResult] = await Promise.all([
-        scrapeBingShopping(`${cached.brand} ${cached.name}`, cached.brand, whoisEnabled).then(
+        scrapeBingShopping(`${cached.brand} ${cached.name}`, cached.brand, whoisEnabled()).then(
           v => ({ status: 'fulfilled' as const, value: v }),
           e => ({ status: 'rejected' as const, reason: e }),
         ),
@@ -249,73 +285,7 @@ router.get('/search', async (req: Request, res: Response) => {
 
   console.log(`[Search] Cache miss — scraping for "${query}"`);
   try {
-    const aiSearchEnabled = getSetting('ai_search_enabled') === '1';
-
-    if (aiSearchEnabled) {
-      // AI mode: Gemini verifies the fragrance and returns niche seller URLs.
-      let aiResult;
-      try {
-        aiResult = await findSellerSites(query);
-      } catch (err) {
-        console.warn('[AI Search] Gemini call failed:', err);
-        aiResult = null;
-      }
-
-      if (aiResult && !aiResult.exists) {
-        console.log(`[AI Search] Fragrance not found: "${query}"`);
-        res.status(404).json({
-          error: aiResult.uncertaintyWarning
-            ?? `Could not find a fragrance matching "${query}". Please check the name and try again.`,
-        });
-        return;
-      }
-
-      const fragranticaQuery = (aiResult?.canonicalBrand && aiResult?.canonicalName)
-        ? `${aiResult.canonicalBrand} ${aiResult.canonicalName}`
-        : query;
-
-      const [fragranticaData, bingResult, siteSellersResult] = await Promise.all([
-        scrapeFragrantica(fragranticaQuery).then(
-          v => ({ status: 'fulfilled' as const, value: v }),
-          e => ({ status: 'rejected' as const, reason: e }),
-        ),
-        scrapeBingShopping(fragranticaQuery, undefined, whoisEnabled).then(
-          v => ({ status: 'fulfilled' as const, value: v }),
-          e => ({ status: 'rejected' as const, reason: e }),
-        ),
-        scrapeAllSites(aiResult?.canonicalBrand ?? query, aiResult?.canonicalName ?? query).then(
-          v => ({ status: 'fulfilled' as const, value: v }),
-          e => ({ status: 'rejected' as const, reason: e }),
-        ),
-      ]);
-
-      if (fragranticaData.status === 'rejected') {
-        console.error('[Fragrantica] Failed:', fragranticaData.reason);
-        res.status(502).json({ error: `Could not find fragrance on Fragrantica: ${query}` });
-        return;
-      }
-
-      const cologne = fragranticaData.value;
-      const bingSellers: ScrapedSeller[] = bingResult.status === 'fulfilled' ? bingResult.value : [];
-      const siteSellers: ScrapedSeller[] = siteSellersResult.status === 'fulfilled' ? siteSellersResult.value : [];
-      if (bingResult.status === 'rejected')        console.warn('[Bing Shopping] Failed:', bingResult.reason);
-      if (siteSellersResult.status === 'rejected') console.warn('[SiteScrapers] Failed:', siteSellersResult.reason);
-
-      let aiSellers: ScrapedSeller[] = [];
-      if (aiResult?.sellers.length) {
-        const bingRefPrice = computeReferencePrice(bingSellers.map(s => s.price));
-        aiSellers = await scrapeDirectPrices(aiResult.sellers, cologne.brand, bingRefPrice || undefined);
-        console.log(`[AI Search] Got ${aiSellers.length} priced sellers from AI sites`);
-      }
-
-      const merged = mergeSellers(siteSellers, bingSellers, aiSellers);
-      console.log(`[Search] Merged: ${siteSellers.length} site + ${bingSellers.length} Bing + ${aiSellers.length} AI = ${merged.length} total sellers`);
-
-      saveAndRespond(res, cologne, merged, querySlug);
-      return;
-    }
-
-    // Non-AI mode: Fragrantica first, then Bing + site scrapers concurrently
+    // Fragrantica first (identity/notes), then Bing + site scrapers concurrently
     const fragranticaData = await scrapeFragrantica(query).then(
       v => ({ status: 'fulfilled' as const, value: v }),
       e => ({ status: 'rejected' as const, reason: e }),
@@ -330,7 +300,7 @@ router.get('/search', async (req: Request, res: Response) => {
     const cologne = fragranticaData.value;
 
     const [sellerData, siteSellersResult] = await Promise.all([
-      scrapeBingShopping(`${cologne.brand} ${cologne.name}`, cologne.brand, whoisEnabled).then(
+      scrapeBingShopping(`${cologne.brand} ${cologne.name}`, cologne.brand, whoisEnabled()).then(
         v => ({ status: 'fulfilled' as const, value: v }),
         e => ({ status: 'rejected' as const, reason: e }),
       ),
