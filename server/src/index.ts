@@ -11,6 +11,7 @@ import authRoutes from './routes/auth';
 import socialRoutes from './routes/social';
 import legalRoutes from './routes/legal';
 import { startDailyUpdate } from './jobs/dailyUpdate';
+import { prewarmScrapers } from './scrapers/fragrantica';
 
 const app = express();
 // Trust the first proxy hop (nginx/Caddy on the VPS) so rate limiting and
@@ -97,6 +98,8 @@ app.get('/health', (_, res) => res.json({ status: 'ok' }));
 initDatabase();
 purgeExpired(); // drop expired sessions / OAuth nonces on boot
 startDailyUpdate();
+// Warm the browser + Algolia key in the background so the first user request is fast.
+void prewarmScrapers();
 
 app.listen(PORT, HOST, () => {
   console.log(`Sniffer server running on http://${HOST}:${PORT}`);

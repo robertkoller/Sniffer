@@ -202,6 +202,18 @@ async function suggestViaAlgolia(query: string, limit: number): Promise<Fragranc
   return suggestions;
 }
 
+// Warm the shared browser + Algolia key at boot so the first real request isn't
+// slow (first Chromium launch + key harvest). Fire-and-forget; a failure here is
+// harmless — the first request just pays the cost as before.
+export async function prewarmScrapers(): Promise<void> {
+  try {
+    await getAlgoliaCreds();
+    console.log('[Prewarm] Shared browser + Algolia key ready');
+  } catch (err) {
+    console.warn('[Prewarm] Failed (will retry on first request):', (err as Error).message);
+  }
+}
+
 // Public entry point: try the fast Algolia HTTP path, fall back to the browser
 // scrape if it fails (key unharvestable, network, zero hits).
 export async function suggestFragrantica(query: string, limit = 12): Promise<FragranceSuggestion[]> {

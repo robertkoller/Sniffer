@@ -113,11 +113,43 @@ async function scrapeOnePage(
       } catch { return bingHref; }
     }
 
+    // The decoded "buy" link is usually a merchant ad-network tracker (dartsearch,
+    // xg4ken, agkn…) that fails or dead-ends when opened directly. The real store
+    // URL is embedded as a param — follow it so the link lands on the product page.
+    function unwrapTrackingUrl(startUrl: string): string {
+      const DEST_PARAMS = ['ds_dest_url', 'murl', 'l1', 'RU', 'ru', 'url', 'u', 'r', 'landingurl', 'destinationurl'];
+      const TRACKER = /(^|\.)(dartsearch\.net|xg4ken\.com|agkn\.com|clickserve|doubleclick\.net|kenshoo|go\.redirectingat\.com|jdoqocy\.com|dpbolvw\.net|anrdoezrs\.net|tkqlhce\.com)/i;
+      let current = startUrl;
+      for (let hop = 0; hop < 5; hop++) {
+        let parsed: URL;
+        try { parsed = new URL(current); } catch { return current; }
+        if (!TRACKER.test(parsed.hostname)) return current;
+        let next = '';
+        for (const key of DEST_PARAMS) {
+          const val = parsed.searchParams.get(key);
+          if (val && /^https?:\/\//i.test(val)) { next = val; break; }
+        }
+        if (!next) {
+          for (const [, val] of parsed.searchParams) {
+            if (/^https?:\/\//i.test(val)) {
+              try { if (!TRACKER.test(new URL(val).hostname)) { next = val; break; } } catch { /* skip */ }
+            }
+          }
+        }
+        if (!next) return current;
+        current = next;
+      }
+      return current;
+    }
+
     const GENERIC = new Set([
       'eau', 'de', 'toilette', 'parfum', 'cologne', 'fragrance', 'perfume',
       'spray', 'for', 'men', 'mens', 'him', 'women', 'womens', 'her', 'by',
       'the', 'a', 'an', 'edp', 'edt', 'ml', 'oz', 'fl', 'new', 'authentic',
       'genuine', 'sealed', '34', '100', 'ounce', 'fluid',
+      // Brand-suffix noise: Fragrantica says "Lattafa Perfumes"/"... Parfums" but
+      // stores drop it, so it must not be a required match word.
+      'perfumes', 'parfums', 'fragrances',
       // Common compound brand-name words that are not product differentiators
       'christian', 'giorgio', 'yves', 'saint', 'original',
       // Note: variant words like "intense", "noir", "sport", "absolu", "elixir" are
@@ -176,7 +208,7 @@ async function scrapeOnePage(
       if (!price || !price.includes('$') || !seller || !href) continue;
 
       const cardText  = card.textContent ?? '';
-      const actualUrl = decodeActualUrl(href);
+      const actualUrl = unwrapTrackingUrl(decodeActualUrl(href));
 
       if (hasWrongSize(cardText) || hasWrongSize(title)) continue;
       if (!title || !titleMatchesQuery(title)) continue;
@@ -184,7 +216,7 @@ async function scrapeOnePage(
       if (DUPE_TYPES.test(cardText)) continue;
       if (BAD_PRODUCT_TYPES.test(cardText) || BAD_PRODUCT_URL.test(actualUrl)) continue;
 
-      results.push({ name: seller, price, href, title });
+      results.push({ name: seller, price, href: actualUrl, title });
     }
     return results;
   }, query);
@@ -201,7 +233,15 @@ async function scrapeOnePage(
 
 export async function scrapeBingShopping(query: string, brand?: string, whoisEnabled = false): Promise<ScrapedSeller[]> {
   // FORM=SHOPTB is required — without it Bing serves an empty "no shopping results" page
-  const url = `https://www.bing.com/shop?q=${encodeURIComponent(query)}&FORM=SHOPTB`;
+  // Some Fragrantica brands carry a suffix stores omit (e.g. "Lattafa Perfumes"
+  // sells as just "Lattafa"), which otherwise zeroes out Bing results. Drop a
+  // non-leading perfumes/parfums/fragrances word (keep a leading one so
+  // "Parfums de Marly ..." survives).
+  const cleanedQuery = query
+    .split(/\s+/)
+    .filter((word, index) => index === 0 || !/^(perfumes|parfums|fragrances)$/i.test(word))
+    .join(' ');
+  const url = `https://www.bing.com/shop?q=${encodeURIComponent(cleanedQuery)}&FORM=SHOPTB`;
   console.log(`[Bing Shopping] Searching: ${url}`);
 
   const browser = await getSharedBrowser();
@@ -220,7 +260,7 @@ export async function scrapeBingShopping(query: string, brand?: string, whoisEna
 
   try {
     const seenSellers = new Set<string>();
-    const sellers = await scrapeOnePage(page, url, query, seenSellers, 40);
+    const sellers = await scrapeOnePage(page, url, cleanedQuery, seenSellers, 40);
     console.log(`[Bing Shopping] Found ${sellers.length} sellers`);
 
     // Compute median price across all results for price-sanity scoring
