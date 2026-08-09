@@ -5,6 +5,9 @@ export const SERVER_URL = import.meta.env.VITE_SERVER_URL as string ?? 'http://l
 // Where the session token lives (set after Google sign-in). Shared with App.tsx.
 export const AUTH_TOKEN_KEY = 'sniffer:authToken';
 
+// Canonical privacy policy, served by the API server (see server routes/legal.ts)
+export const PRIVACY_POLICY_URL = `${SERVER_URL}/privacy`;
+
 function storedToken(): string | null {
   return localStorage.getItem(AUTH_TOKEN_KEY);
 }

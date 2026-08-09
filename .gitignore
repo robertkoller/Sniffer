@@ -12,7 +12,25 @@ planner.md
 dist/
 *.tsbuildinfo
 
-# SQLite runtime database (recreated on server startup; also holds sessions)
+# SQLite runtime database (recreated on server startup; also holds sessions).
+# Match in any location — e.g. server/db when the server is run from server/.
 db/sniffer.db
 db/sniffer.db-shm
 db/sniffer.db-wal
+**/sniffer.db
+**/sniffer.db-shm
+**/sniffer.db-wal
+server/db/
+
+# Xcode / native app (mobile2) build output — regenerated on every build
+mobile2/build/
+DerivedData/
+build/Build/
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+
+# Expo / React Native caches
+.expo/
+mobile/.expo/

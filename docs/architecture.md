@@ -16,8 +16,9 @@
 - **`server/`** owns all the "truth": the scraping pipeline, the SQLite cache of colognes/sellers, user accounts, sessions, taste profiles, and social data. It never renders UI.
 - **`client/`** (Sniffer website) is a React SPA. Its job is price comparison: search → pick a cologne → see sellers/prices.
 - **`mobile/`** (Sniffy app) is a React Native/Expo app. Its job is the personal collection + social layer. It fetches fragrance *info* from the server but sends users to the website for actual prices.
+- **`mobile2/`** (Sniffy app, native) is a **SwiftUI** port of `mobile/` — same API, same behavior. See [swift-app.md](swift-app.md).
 
-Both front ends are **thin clients** — they hold almost no business logic. They call the API and render the results.
+All front ends are **thin clients** — they hold almost no business logic. They call the API and render the results.
 
 ## Tech stack
 
@@ -26,8 +27,9 @@ Both front ends are **thin clients** — they hold almost no business logic. The
 | Language (everywhere) | TypeScript |
 | Server | Node.js, Express, better-sqlite3 (SQLite), Playwright (headless Chromium) |
 | Web client | React 19, Vite, Tailwind CSS, lucide-react icons |
-| Mobile | React Native, Expo (SDK 55), Expo Router, AsyncStorage, expo-image |
-| Auth | Google OAuth 2.0 / OpenID Connect (server-side code flow), opaque bearer tokens |
+| Mobile (RN) | React Native, Expo (SDK 55), Expo Router, AsyncStorage, expo-image |
+| Mobile (native) | Swift, SwiftUI, iOS 17+ (`mobile2/`) |
+| Auth | Google OAuth 2.0 / OpenID Connect (server-side code flow), opaque bearer tokens (hashed at rest) |
 
 ## How the apps reach the server
 

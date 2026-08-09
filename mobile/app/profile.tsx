@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, Linking } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,6 +10,7 @@ import ScreenHeader from '../components/ScreenHeader';
 import { RatingBadge } from '../components/RatingSlider';
 import { AccountCard, CurrentlyWearingCard, ShowcaseShelf, Avatar } from '../components/SocialCards';
 import { WearsPerBottleCard, WearTimelineCard, ComplimentsCard } from '../components/WearCharts';
+import { PRIVACY_POLICY_URL } from '../services/api';
 import { SEASONS, SCENT_FAMILIES, type ScentFamily, type GenderPreference } from '../types';
 import { colors, font, radius, type } from '../constants/theme';
 
@@ -145,6 +146,17 @@ function SettingsSheet({ visible, onClose }: { visible: boolean; onClose: () => 
           <AccountCard />
           <Text style={styles.settingsSectionLabel}>PREFERENCES</Text>
           <TasteProfileCard />
+          <Text style={styles.settingsSectionLabel}>ABOUT</Text>
+          <TouchableOpacity
+            style={styles.privacyRow}
+            onPress={() => Linking.openURL(PRIVACY_POLICY_URL).catch(() => {})}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="hand-left-outline" size={16} color={colors.gold} />
+            <Text style={styles.privacyRowText}>Privacy Policy</Text>
+            <View style={{ flex: 1 }} />
+            <Ionicons name="open-outline" size={15} color={colors.textFaint} />
+          </TouchableOpacity>
           <View style={{ height: 40 }} />
         </ScrollView>
       </View>
@@ -435,6 +447,19 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 8,
   },
+  privacyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    marginHorizontal: 16,
+  },
+  privacyRowText: { fontSize: 15, fontWeight: '600', color: colors.text },
   identityRow: {
     flexDirection: 'row',
     alignItems: 'center',

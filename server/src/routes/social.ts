@@ -3,11 +3,15 @@ import { requireAuth, authedUser } from './auth';
 import {
   saveUserLibrary,
   getUserLibrary,
-  listUsersWithLibraries,
+  getUserWithLibraryById,
+  listUsersWithLibrariesPage,
+  countUsers,
   logWearForUser,
   getWearStatsForUser,
+  getWearStatsForUsers,
   getWearHistoryForUser,
   type UserRow,
+  type WearStats,
 } from '../db';
 
 const router = Router();
@@ -180,9 +184,9 @@ function parsePayload(rawPayload: string | null): LibraryPayload {
   }
 }
 
-function buildPublicProfile(user: UserRow, rawPayload: string | null) {
+function buildPublicProfile(user: UserRow, rawPayload: string | null, preloadedStats?: Map<string, WearStats>) {
   const payload = parsePayload(rawPayload);
-  const wearStats = getWearStatsForUser(user.id);
+  const wearStats = preloadedStats ?? getWearStatsForUser(user.id);
 
   // Overlay server-verified wear counts onto the snapshot
   const collection = payload.collection.map(item => {
@@ -297,10 +301,17 @@ router.get('/social/me', requireAuth, (req: Request, res: Response) => {
   res.json({ profile: buildPublicProfile(user, getUserLibrary(user.id)) });
 });
 
-// GET /api/social/users — community directory (public)
-router.get('/social/users', (_req: Request, res: Response) => {
-  const users = listUsersWithLibraries().map(row => {
-    const profile = buildPublicProfile(row, row.payload);
+// GET /api/social/users?limit=&offset= — community directory (auth required,
+// paginated). Exposes names/photos/collections, so it's gated behind sign-in
+// and never returns an unbounded set.
+router.get('/social/users', requireAuth, (req: Request, res: Response) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 30, 1), 50);
+  const offset = Math.max(parseInt(req.query.offset as string, 10) || 0, 0);
+
+  const rows = listUsersWithLibrariesPage(limit, offset);
+  const statsByUser = getWearStatsForUsers(rows.map(row => row.id));
+  const users = rows.map(row => {
+    const profile = buildPublicProfile(row, row.payload, statsByUser.get(row.id) ?? new Map());
     return {
       user: profile.user,
       bottles: profile.stats.bottles,
@@ -309,13 +320,18 @@ router.get('/social/users', (_req: Request, res: Response) => {
       currentlyWearing: profile.currentlyWearing,
     };
   });
-  res.json({ users });
+  const total = countUsers();
+  res.json({ users, page: { limit, offset, total, hasMore: offset + rows.length < total } });
 });
 
-// GET /api/social/users/:id — one user's public profile
-router.get('/social/users/:id', (req: Request, res: Response) => {
+// GET /api/social/users/:id — one user's public profile (auth required)
+router.get('/social/users/:id', requireAuth, (req: Request, res: Response) => {
   const userId = parseInt(req.params.id, 10);
-  const row = listUsersWithLibraries().find(user => user.id === userId);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    res.status(400).json({ error: 'Invalid user id.' });
+    return;
+  }
+  const row = getUserWithLibraryById(userId);
   if (!row) {
     res.status(404).json({ error: 'User not found.' });
     return;

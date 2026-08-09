@@ -7,16 +7,31 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useProfile } from '../context/ProfileContext';
 import { useAuth } from '../context/AuthContext';
+import { PRIVACY_POLICY_URL } from '../services/api';
 import { SCENT_FAMILIES, type ScentFamily, type GenderPreference } from '../types';
 import { colors, font, radius } from '../constants/theme';
 
 const ONBOARDED_KEY = 'sniffy:onboarded';
+const AGE_CONFIRMED_KEY = 'sniffy:ageConfirmed';
+
+function PrivacyLink() {
+  return (
+    <TouchableOpacity
+      style={styles.privacyLink}
+      onPress={() => Linking.openURL(PRIVACY_POLICY_URL).catch(() => {})}
+      hitSlop={8}
+    >
+      <Text style={styles.privacyLinkText}>Privacy Policy</Text>
+    </TouchableOpacity>
+  );
+}
 
 const GENDER_OPTIONS: Array<{ value: GenderPreference; label: string; caption: string }> = [
   { value: 'men', label: "Men's", caption: 'Show me masculine scents first' },
@@ -33,6 +48,7 @@ export default function Onboarding() {
   const [step, setStep] = useState(0);
   const [email, setEmail] = useState('');
   const [devError, setDevError] = useState<string | null>(null);
+  const [ageConfirmed, setAgeConfirmed] = useState(false);
 
   useEffect(() => {
     AsyncStorage.getItem(ONBOARDED_KEY).then(flag => {
@@ -40,11 +56,21 @@ export default function Onboarding() {
         setVisible(true);
       }
     });
+    AsyncStorage.getItem(AGE_CONFIRMED_KEY).then(flag => {
+      if (flag) {
+        setAgeConfirmed(true);
+      }
+    });
   }, []);
+
+  function confirmAge() {
+    setAgeConfirmed(true);
+    AsyncStorage.setItem(AGE_CONFIRMED_KEY, '1');
+  }
 
   // Signing in mid-flow counts as finishing
   useEffect(() => {
-    if (visible && user && step === 2) {
+    if (visible && user && step === 3) {
       finish();
     }
   }, [user, visible, step]);
@@ -82,12 +108,47 @@ export default function Onboarding() {
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           {/* Progress dots */}
           <View style={styles.dotsRow}>
-            {[0, 1, 2].map(dotIndex => (
+            {[0, 1, 2, 3].map(dotIndex => (
               <View key={dotIndex} style={[styles.dot, step === dotIndex && styles.dotActive]} />
             ))}
           </View>
 
           {step === 0 && (
+            <>
+              <Text style={styles.kicker}>BEFORE WE START</Text>
+              <Text style={styles.title}>A quick check</Text>
+              <Text style={styles.caption}>
+                Sniffy is intended for people aged 13 and older. Please confirm your age. See our
+                Privacy Policy for how your data is handled.
+              </Text>
+              <TouchableOpacity
+                style={[styles.optionCard, ageConfirmed && styles.optionCardOn]}
+                onPress={() => (ageConfirmed ? setAgeConfirmed(false) : confirmAge())}
+                activeOpacity={0.8}
+              >
+                <Ionicons
+                  name={ageConfirmed ? 'checkmark-circle' : 'ellipse-outline'}
+                  size={22}
+                  color={ageConfirmed ? colors.goldBright : colors.textFaint}
+                />
+                <Text style={[styles.ageText, ageConfirmed && styles.optionLabelOn]}>
+                  I'm 13 years old or older
+                </Text>
+              </TouchableOpacity>
+              <PrivacyLink />
+              <TouchableOpacity
+                style={[styles.nextBtn, !ageConfirmed && styles.nextBtnDisabled]}
+                onPress={() => ageConfirmed && setStep(1)}
+                activeOpacity={0.85}
+                disabled={!ageConfirmed}
+              >
+                <Text style={styles.nextBtnText}>CONTINUE</Text>
+                <Ionicons name="arrow-forward" size={16} color={colors.onGold} />
+              </TouchableOpacity>
+            </>
+          )}
+
+          {step === 1 && (
             <>
               <Text style={styles.kicker}>WELCOME TO SNIFFY</Text>
               <Text style={styles.title}>What do you wear?</Text>
@@ -117,14 +178,17 @@ export default function Onboarding() {
                   </TouchableOpacity>
                 );
               })}
-              <TouchableOpacity style={styles.nextBtn} onPress={() => setStep(1)} activeOpacity={0.85}>
+              <TouchableOpacity style={styles.nextBtn} onPress={() => setStep(2)} activeOpacity={0.85}>
                 <Text style={styles.nextBtnText}>NEXT</Text>
                 <Ionicons name="arrow-forward" size={16} color={colors.onGold} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setStep(0)} style={styles.backLink}>
+                <Text style={styles.backLinkText}>Back</Text>
               </TouchableOpacity>
             </>
           )}
 
-          {step === 1 && (
+          {step === 2 && (
             <>
               <Text style={styles.kicker}>YOUR TASTE</Text>
               <Text style={styles.title}>What kind of scents do you like?</Text>
@@ -148,17 +212,17 @@ export default function Onboarding() {
                   );
                 })}
               </View>
-              <TouchableOpacity style={styles.nextBtn} onPress={() => setStep(2)} activeOpacity={0.85}>
+              <TouchableOpacity style={styles.nextBtn} onPress={() => setStep(3)} activeOpacity={0.85}>
                 <Text style={styles.nextBtnText}>NEXT</Text>
                 <Ionicons name="arrow-forward" size={16} color={colors.onGold} />
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => setStep(0)} style={styles.backLink}>
+              <TouchableOpacity onPress={() => setStep(1)} style={styles.backLink}>
                 <Text style={styles.backLinkText}>Back</Text>
               </TouchableOpacity>
             </>
           )}
 
-          {step === 2 && (
+          {step === 3 && (
             <>
               <Text style={styles.kicker}>ONE LAST THING</Text>
               <Text style={styles.title}>Make it yours</Text>
@@ -197,7 +261,8 @@ export default function Onboarding() {
               <TouchableOpacity onPress={finish} style={styles.skipLink}>
                 <Text style={styles.skipLinkText}>Skip for now</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => setStep(1)} style={styles.backLink}>
+              <PrivacyLink />
+              <TouchableOpacity onPress={() => setStep(2)} style={styles.backLink}>
                 <Text style={styles.backLinkText}>Back</Text>
               </TouchableOpacity>
             </>
@@ -258,6 +323,15 @@ const styles = StyleSheet.create({
     marginTop: 24,
   },
   nextBtnText: { fontSize: 11, fontWeight: '800', letterSpacing: 1.2, color: colors.onGold },
+  nextBtnDisabled: { opacity: 0.4 },
+  ageText: { fontSize: 15, fontWeight: '600', color: colors.textSecondary, flex: 1 },
+  privacyLink: { alignItems: 'center', paddingVertical: 12 },
+  privacyLinkText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.goldDim,
+    textDecorationLine: 'underline',
+  },
   googleBtn: {
     flexDirection: 'row',
     alignItems: 'center',

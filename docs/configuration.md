@@ -7,8 +7,9 @@ All server config is via environment variables in **`server/.env`** (which is gi
 | Variable | Default | What it does |
 |----------|---------|--------------|
 | `PORT` | `3001` | Port the API listens on. |
-| `CLIENT_ORIGIN` | `http://localhost:3000` | CORS origin allowed in production. In dev, any origin is allowed. |
-| `NODE_ENV` | (unset) | When `production`, CORS is locked to `CLIENT_ORIGIN` and the dev login is disabled. |
+| `CLIENT_ORIGIN` | `http://localhost:3000` | CORS origin allowed. Locked to this value unless `NODE_ENV=development`. |
+| `NODE_ENV` | (unset) | CORS opens to any origin **only** when set to `development`; any other value (including unset) locks CORS to `CLIENT_ORIGIN` — i.e. it fails closed. |
+| `ENABLE_DEV_LOGIN` | (unset) | Must be `true` to enable the password-less dev login (`POST /api/auth/dev`). `npm run dev` sets it automatically; **leave it unset in production.** |
 | `WHOIS_ENABLED` | **on** | WHOIS domain-age trust checks. **Set to `false` (or `0`) to turn off.** See [whois-and-trust.md](whois-and-trust.md). |
 | `GOOGLE_CLIENT_ID` | — | Google OAuth web client ID. Required for Google sign-in. |
 | `GOOGLE_CLIENT_SECRET` | — | Its secret. Required for Google sign-in. |

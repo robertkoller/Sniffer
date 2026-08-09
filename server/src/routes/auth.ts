@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import { upsertUser, createSession, getUserByToken, deleteSession, type UserRow } from '../db';
+import { upsertUser, createSession, getUserByToken, deleteSession, createOAuthState, consumeOAuthState, type UserRow } from '../db';
 
 // Google OAuth is activated by setting these in server/.env:
 //   GOOGLE_CLIENT_ID=<web client id from Google Cloud Console>
@@ -9,7 +9,14 @@ import { upsertUser, createSession, getUserByToken, deleteSession, type UserRow 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? '';
 const SERVER_PUBLIC_URL = process.env.SERVER_PUBLIC_URL ?? 'http://localhost:3001';
-const DEV_LOGIN_ENABLED = process.env.NODE_ENV !== 'production';
+// The deployed website origin (e.g. https://sniffer.vercel.app). The web sign-in
+// flow returns the browser here, so it must be an allowed return URL.
+const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN ?? 'http://localhost:3000';
+// Dev login is a password-less "sign in as any email" shortcut, so it must
+// fail closed. It's gated on an explicit opt-in flag (set by `npm run dev`)
+// rather than on NODE_ENV — that way a production box that forgets to set
+// NODE_ENV=production still won't silently expose it.
+const DEV_LOGIN_ENABLED = process.env.ENABLE_DEV_LOGIN === 'true';
 
 const router = Router();
 
@@ -23,9 +30,14 @@ function issueToken(userId: number): string {
   return token;
 }
 
-// Only redirect back to places we trust: the two apps (dev + Expo Go) or custom scheme
+// Only redirect back to places we trust: the app deep links (standalone + Expo
+// Go), localhost for dev, or the configured production website origin. The
+// origin check is exact (=== or origin + '/') so it can't be prefix-spoofed.
 function isSafeReturnUrl(url: string): boolean {
-  return /^(sniffy:\/\/|exp:\/\/|exps:\/\/|http:\/\/localhost(:\d+)?\/)/.test(url);
+  if (/^(sniffy:\/\/|exp:\/\/|exps:\/\/|http:\/\/localhost(:\d+)?\/)/.test(url)) {
+    return true;
+  }
+  return url === CLIENT_ORIGIN || url.startsWith(`${CLIENT_ORIGIN}/`);
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
@@ -58,7 +70,10 @@ router.get('/auth/google/start', (req: Request, res: Response) => {
     res.status(400).json({ error: 'Invalid return URL.' });
     return;
   }
-  const state = Buffer.from(JSON.stringify({ return: returnUrl })).toString('base64url');
+  // Random single-use nonce; the return URL is held server-side (not in the
+  // state blob) so it can't be tampered with, and the nonce blocks login-CSRF.
+  const state = crypto.randomBytes(16).toString('hex');
+  createOAuthState(state, returnUrl, 600); // 10-minute TTL
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
     redirect_uri: `${SERVER_PUBLIC_URL}/api/auth/google/callback`,
@@ -79,9 +94,11 @@ router.get('/auth/google/callback', async (req: Request, res: Response) => {
       res.status(400).send('Missing code or state.');
       return;
     }
-    const { return: returnUrl } = JSON.parse(Buffer.from(state, 'base64url').toString()) as { return: string };
-    if (!isSafeReturnUrl(returnUrl)) {
-      res.status(400).send('Invalid return URL.');
+    // Single-use nonce lookup; the return URL comes from our own store, never
+    // from the client. An unknown/expired/replayed state fails here.
+    const returnUrl = consumeOAuthState(state);
+    if (!returnUrl || !isSafeReturnUrl(returnUrl)) {
+      res.status(400).send('Invalid or expired sign-in request. Please try again.');
       return;
     }
 
@@ -115,8 +132,15 @@ router.get('/auth/google/callback', async (req: Request, res: Response) => {
     });
     const token = issueToken(user.id);
 
-    const separator = returnUrl.includes('?') ? '&' : '?';
-    res.redirect(`${returnUrl}${separator}token=${token}`);
+    // For web (http/https) returns, hand the token back in the URL *fragment* —
+    // fragments aren't sent to servers, logged, or included in Referer headers,
+    // so the session token doesn't leak. App custom-scheme deep links (sniffy://,
+    // exp://) use the query string, which their handlers parse.
+    const isWeb = /^https?:\/\//i.test(returnUrl);
+    const redirectUrl = isWeb
+      ? `${returnUrl}#token=${token}`
+      : `${returnUrl}${returnUrl.includes('?') ? '&' : '?'}token=${token}`;
+    res.redirect(redirectUrl);
   } catch (err) {
     console.error('[Auth] Google callback failed:', err);
     res.status(500).send('Sign-in failed. Please try again.');
@@ -130,10 +154,17 @@ router.post('/auth/google', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'Missing idToken.' });
     return;
   }
+  // Without a configured client id we cannot verify the token's audience, so
+  // we must refuse rather than accept a token minted for some other app.
+  if (!GOOGLE_CLIENT_ID) {
+    res.status(503).json({ error: 'Google sign-in is not configured.' });
+    return;
+  }
   try {
     const infoResponse = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
     const info = await infoResponse.json() as { aud?: string; sub?: string; email?: string; name?: string; picture?: string };
-    if (!infoResponse.ok || !info.sub || !info.email || (GOOGLE_CLIENT_ID && info.aud !== GOOGLE_CLIENT_ID)) {
+    // Always enforce the audience — the token must have been minted for us.
+    if (!infoResponse.ok || !info.sub || !info.email || info.aud !== GOOGLE_CLIENT_ID) {
       res.status(401).json({ error: 'Invalid Google token.' });
       return;
     }

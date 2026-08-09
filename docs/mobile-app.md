@@ -2,6 +2,8 @@
 
 React Native + Expo (SDK 55), TypeScript, file-based routing via Expo Router. Lives in `mobile/`. It's a thin client over the shared server (see [architecture.md](architecture.md)) — plus a lot of local state for the collection/social features.
 
+> There is also a **native SwiftUI port** of this app in `mobile2/` — see [swift-app.md](swift-app.md). The two are intended to stay feature-identical.
+
 ## Screens (`mobile/app/`)
 
 Expo Router turns files into tab routes. `_layout.tsx` defines the tab bar and wraps everything in the context providers.
@@ -48,7 +50,9 @@ State is deliberately centralized so the tabs stay in sync (an early bug was eac
 
 ## Local persistence (AsyncStorage keys)
 
-`sniffy:collection`, `sniffy:wishlist`, `sniffy:sections`, `sniffy:showcase`, `sniffy:currentlyWearing`, `sniffy:wearLog`, `sniffy:complimentLog`, `sniffy:profile`, `sniffy:recentSearches`, `sniffy:onboarded`, `sniffy:authToken`, `sniffy:authUser`.
+`sniffy:collection`, `sniffy:wishlist`, `sniffy:sections`, `sniffy:showcase`, `sniffy:currentlyWearing`, `sniffy:wearLog`, `sniffy:complimentLog`, `sniffy:profile`, `sniffy:recentSearches`, `sniffy:onboarded`, `sniffy:ageConfirmed`, `sniffy:authToken`, `sniffy:authUser`.
+
+The first onboarding step is a **13+ age gate** (COPPA) with a Privacy Policy link; see [privacy-and-age-gate.md](privacy-and-age-gate.md).
 
 When signed in, the library is also pushed to the server so it can be restored on a fresh device.
 

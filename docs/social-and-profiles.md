@@ -33,10 +33,10 @@ Logging that you wore a fragrance is enforced by the server so it can't be faked
 ## Public profiles
 
 - `GET /api/social/me` — your own public profile: showcase (up to 10 curated bottles, or top-rated as a fallback), currently wearing, and stats (bottles, wishlist count, total wears, total compliments, average rating).
-- `GET /api/social/users` — a community directory of everyone.
-- `GET /api/social/users/:id` — one user's public profile.
+- `GET /api/social/users?limit=&offset=` 🔒 — community directory. **Requires sign-in and is paginated** (limit ≤ 50); returns a `page` cursor (`{ limit, offset, total, hasMore }`). Wear stats are fetched in one batched query, not per user.
+- `GET /api/social/users/:id` 🔒 — one user's public profile.
 
-The compliments log is client-tracked and synced in the library payload; wear counts in these responses are always the server-verified ones.
+> The directory exposes names, photos, and collections, so it's gated behind auth and bounded — see [security.md](security.md). The compliments log is client-tracked and synced in the library payload; wear counts in these responses are always the server-verified ones.
 
 ## Ratings & other library concepts
 

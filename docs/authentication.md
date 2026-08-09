@@ -4,11 +4,13 @@ One account system, shared by the website and the app. It's **Google OAuth 2.0 /
 
 ## How the Google flow works
 
-1. The user clicks "Sign in with Google". The front end sends them to `GET /api/auth/google/start?return=<url>`, where `return` is where to send them back (the website origin, or the app's `sniffy://auth` deep link).
-2. The server redirects to Google's consent screen, built from `GOOGLE_CLIENT_ID` and `redirect_uri = SERVER_PUBLIC_URL/api/auth/google/callback`.
-3. Google authenticates the user and redirects to `GET /api/auth/google/callback` with a one-time `code`.
-4. The server exchanges the code (using `GOOGLE_CLIENT_SECRET`) for an ID token, reads the user's `sub`/`email`/`name`/`picture`, upserts the user, and issues **its own** opaque 90-day bearer token (a random hex string stored in the `sessions` table).
-5. The server redirects the browser to `return?token=<token>`. The front end grabs the token and stores it.
+1. The user clicks "Sign in with Google". The front end sends them to `GET /api/auth/google/start?return=<url>`, where `return` is where to send them back (the website origin, or the app's `sniffy://auth` deep link). The server validates `return` against an allowlist (`isSafeReturnUrl`).
+2. The server mints a **random single-use `state` nonce**, stores it with the return URL in the `oauth_states` table (10-minute TTL), and redirects to Google's consent screen, built from `GOOGLE_CLIENT_ID` and `redirect_uri = SERVER_PUBLIC_URL/api/auth/google/callback`.
+3. Google authenticates the user and redirects to `GET /api/auth/google/callback` with a one-time `code` and the `state`.
+4. The server **consumes** the `state` (one-time; unknown/expired/replayed → 400) and reads the **return URL from its own store**, never from the client. It exchanges the code (using `GOOGLE_CLIENT_SECRET`) for an ID token, reads the user's `sub`/`email`/`name`/`picture`, upserts the user, and issues **its own** opaque 90-day bearer token (32 random bytes; only its **SHA-256 hash** is stored in the `sessions` table).
+5. The server redirects back with the token: in the URL **fragment** (`return#token=`) for web origins — fragments aren't logged or sent in `Referer` — and in the **query string** (`return?token=`) for app custom-scheme deep links, whose handlers parse the query. The front end grabs the token and stores it.
+
+> **Why the state nonce matters:** it holds the return URL server-side (so a tampered state can't redirect your token elsewhere) and blocks login-CSRF and replay. See [security.md](security.md).
 
 **Key point:** Google only ever sees your **server callback**. The `sniffy://` deep link and the website origin never go into Google Console — only the server callback URI does. So one **Web** OAuth client works for both the website and the app; you do *not* need a separate iOS client.
 
@@ -49,10 +51,14 @@ The `sniffy://` URL scheme is already registered in `mobile/app.json`. No native
 
 ## Dev login (no OAuth needed)
 
-`POST /api/auth/dev` with `{ email, name }` issues a real session token without Google. It's **disabled when `NODE_ENV=production`**. The mobile app exposes a dev-login field under `__DEV__`; the website currently only offers Google sign-in (a dev-login button could be added for local testing).
+`POST /api/auth/dev` with `{ email, name }` issues a real session token without Google. It is **off unless `ENABLE_DEV_LOGIN=true`** (set automatically by `npm run dev`, and never in production) — it fails closed so a deploy that forgets `NODE_ENV` still won't expose it. The mobile app exposes a dev-login field under `__DEV__`; the website currently only offers Google sign-in (a dev-login button could be added for local testing).
 
 ## Sessions & sign-out
 
 - Tokens live 90 days (`sessions.expires_at`).
+- Tokens are stored **hashed** (SHA-256) — a database leak yields no usable tokens. Lookups hash the incoming bearer token and compare.
+- Expired sessions (and OAuth nonces) are purged on server boot and by the daily job (`purgeExpired()`), so the tables don't grow forever.
 - `POST /api/auth/logout` deletes the session row.
-- The mobile app stores the token in AsyncStorage (`sniffy:authToken`); the website in `localStorage` (`sniffer:authToken`). Both re-validate via `GET /api/auth/me` on load and clear the token if it's invalid.
+- The mobile apps store the token in AsyncStorage / UserDefaults (`sniffy:authToken`); the website in `localStorage` (`sniffer:authToken`). All re-validate via `GET /api/auth/me` on load and clear the token if it's invalid.
+
+The native-token endpoint `POST /api/auth/google` (for SDK flows) requires `GOOGLE_CLIENT_ID` and **always** verifies the token's `aud` — it refuses rather than trust a token minted for another app.

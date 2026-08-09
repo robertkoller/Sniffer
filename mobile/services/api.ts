@@ -5,12 +5,15 @@ import type { FragranceResult, FragranceSuggestion, FragranceInfo, UserProfile }
 // When running in the iOS Simulator, localhost works fine.
 const BASE_URL = __DEV__
   ? 'http://localhost:3001'
-  : 'https://your-production-api.com'; // TODO: replace when deployed
+  : 'https://178.128.151.84.sslip.io'; // VPS backend (HTTPS via Caddy + sslip.io)
 
 // The Sniffer website (price comparison) — used for "see prices" links
 export const SNIFFER_WEB_URL = __DEV__
   ? 'http://localhost:3000'
-  : 'https://your-production-site.com'; // TODO: replace when deployed
+  : 'https://sniffer-ybb9.vercel.app'; // Vercel front end
+
+// Canonical privacy policy, served by the API server (see server routes/legal.ts)
+export const PRIVACY_POLICY_URL = `${BASE_URL}/privacy`;
 
 export { type FragranceResult, type FragranceSuggestion, type FragranceInfo, type UserProfile };
 

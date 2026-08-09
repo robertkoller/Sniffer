@@ -39,8 +39,13 @@ User accounts.
 
 ### `sessions`
 Bearer-token sessions.
-- `token` (PK), `user_id` (FK), `created_at`, `expires_at`
-- 90-day TTL. `getUserByToken()` joins this to `users` and checks expiry.
+- `token` (PK — the **SHA-256 hash** of the token, not the raw token), `user_id` (FK), `created_at`, `expires_at`
+- 90-day TTL, indexed on `expires_at`. `getUserByToken()` hashes the incoming token, joins to `users`, and checks expiry. Expired rows are dropped by `purgeExpired()` on boot and daily.
+
+### `oauth_states`
+Short-lived, single-use anti-CSRF nonces for the Google flow.
+- `state` (PK, random nonce), `return_url` (held server-side), `expires_at` (10-min TTL).
+- Written by `/auth/google/start`, consumed once by `/auth/google/callback`. See [security.md](security.md).
 
 ### `user_libraries`
 The app's synced library snapshot, one row per user.
@@ -69,9 +74,10 @@ So adding a column = add an `IF NOT EXISTS`-style check in `initDatabase()`. Add
 - Colognes: `getCologneBySlug`, `getCologneRowBySlug`, `saveCologneWithSellers`, `updateSellersForCologne`, `getAllColognes`, `deleteCologne`, `clearDatabase`
 - Settings: `getSetting`, `setSetting`
 - Domain age: `getCachedDomainAge`, `cacheDomainAge`
-- Users/sessions: `upsertUser`, `createSession`, `getUserByToken`, `deleteSession`
-- Social: `saveUserLibrary`, `getUserLibrary`, `listUsersWithLibraries`, `saveUserProfile`, `getUserProfile`
-- Wears: `logWearForUser`, `getWearStatsForUser`, `getWearHistoryForUser`
+- Users/sessions: `upsertUser`, `createSession`, `getUserByToken`, `deleteSession`, `purgeExpired`
+- OAuth state: `createOAuthState`, `consumeOAuthState`
+- Social: `saveUserLibrary`, `getUserLibrary`, `getUserWithLibraryById`, `listUsersWithLibrariesPage`, `countUsers`, `saveUserProfile`, `getUserProfile`
+- Wears: `logWearForUser`, `getWearStatsForUser`, `getWearStatsForUsers`, `getWearHistoryForUser`
 
 ## Inspecting / editing
 

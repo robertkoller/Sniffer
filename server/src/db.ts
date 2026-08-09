@@ -1,7 +1,14 @@
 import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import type { CologneRow, SellerRow, StoreRow, ScentDetails } from './types';
+
+// Session tokens are stored hashed at rest so a database leak doesn't hand an
+// attacker usable bearer tokens. The raw token only ever lives with the client.
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
 
 const DB_DIR = path.join(__dirname, '../../db');
 const DB_PATH = path.join(DB_DIR, 'sniffer.db');
@@ -111,6 +118,16 @@ export function initDatabase(): void {
       PRIMARY KEY (user_id, slug, worn_on),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    -- Short-lived, single-use anti-CSRF nonces for the OAuth flow. The return
+    -- URL is held server-side so a tampered/forged state can't redirect the token.
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      state      TEXT    PRIMARY KEY,
+      return_url TEXT    NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
   `);
 
   // Migrations: columns added to colognes after the initial schema
@@ -302,19 +319,46 @@ const SESSION_TTL_SECONDS = 90 * 24 * 60 * 60; // 90 days
 
 export function createSession(userId: number, token: string): void {
   getDb().prepare('INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, unixepoch() + ?)')
-    .run(token, userId, SESSION_TTL_SECONDS);
+    .run(hashToken(token), userId, SESSION_TTL_SECONDS);
 }
 
 export function getUserByToken(token: string): UserRow | null {
   const row = getDb().prepare(`
     SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id
     WHERE sessions.token = ? AND sessions.expires_at > unixepoch()
-  `).get(token) as UserRow | undefined;
+  `).get(hashToken(token)) as UserRow | undefined;
   return row ?? null;
 }
 
 export function deleteSession(token: string): void {
-  getDb().prepare('DELETE FROM sessions WHERE token = ?').run(token);
+  getDb().prepare('DELETE FROM sessions WHERE token = ?').run(hashToken(token));
+}
+
+// Housekeeping: drop sessions and OAuth nonces that are past their expiry so the
+// tables don't grow without bound. Called at startup and by the daily job.
+export function purgeExpired(): void {
+  const db = getDb();
+  db.prepare('DELETE FROM sessions WHERE expires_at <= unixepoch()').run();
+  db.prepare('DELETE FROM oauth_states WHERE expires_at <= unixepoch()').run();
+}
+
+// OAuth anti-CSRF state: store a random nonce → return URL, one-time use.
+export function createOAuthState(state: string, returnUrl: string, ttlSeconds: number): void {
+  getDb().prepare('INSERT INTO oauth_states (state, return_url, expires_at) VALUES (?, ?, unixepoch() + ?)')
+    .run(state, returnUrl, ttlSeconds);
+}
+
+// Consume the nonce: returns its return URL and deletes it (single use), or null
+// if it's unknown or expired.
+export function consumeOAuthState(state: string): string | null {
+  const db = getDb();
+  const row = db.prepare('SELECT return_url, expires_at FROM oauth_states WHERE state = ?')
+    .get(state) as { return_url: string; expires_at: number } | undefined;
+  db.prepare('DELETE FROM oauth_states WHERE state = ?').run(state);
+  if (!row || row.expires_at <= Math.floor(Date.now() / 1000)) {
+    return null;
+  }
+  return row.return_url;
 }
 
 export function saveUserLibrary(userId: number, payload: string): void {
@@ -339,6 +383,15 @@ export function saveUserProfile(userId: number, payload: string): void {
 export function getUserProfile(userId: number): string | null {
   const row = getDb().prepare('SELECT payload FROM user_profiles WHERE user_id = ?').get(userId) as { payload: string } | undefined;
   return row?.payload ?? null;
+}
+
+export function getUserWithLibraryById(userId: number): (UserRow & { payload: string | null }) | null {
+  const row = getDb().prepare(`
+    SELECT users.*, user_libraries.payload FROM users
+    LEFT JOIN user_libraries ON user_libraries.user_id = users.id
+    WHERE users.id = ?
+  `).get(userId) as (UserRow & { payload: string | null }) | undefined;
+  return row ?? null;
 }
 
 export function listUsersWithLibraries(): Array<UserRow & { payload: string | null }> {
@@ -373,6 +426,40 @@ export function getWearStatsForUser(userId: number): Map<string, WearStats> {
     stats.set(row.slug, { count: row.count, lastWornOn: row.last_worn_on });
   }
   return stats;
+}
+
+// Wear stats for many users in one query — avoids an N+1 across the directory.
+export function getWearStatsForUsers(userIds: number[]): Map<number, Map<string, WearStats>> {
+  const byUser = new Map<number, Map<string, WearStats>>();
+  if (userIds.length === 0) {
+    return byUser;
+  }
+  const placeholders = userIds.map(() => '?').join(',');
+  const rows = getDb().prepare(
+    `SELECT user_id, slug, COUNT(*) as count, MAX(worn_on) as last_worn_on
+       FROM wear_logs WHERE user_id IN (${placeholders}) GROUP BY user_id, slug`,
+  ).all(...userIds) as Array<{ user_id: number; slug: string; count: number; last_worn_on: string }>;
+  for (const row of rows) {
+    if (!byUser.has(row.user_id)) {
+      byUser.set(row.user_id, new Map());
+    }
+    byUser.get(row.user_id)!.set(row.slug, { count: row.count, lastWornOn: row.last_worn_on });
+  }
+  return byUser;
+}
+
+export function countUsers(): number {
+  const row = getDb().prepare('SELECT COUNT(*) as n FROM users').get() as { n: number };
+  return row.n;
+}
+
+export function listUsersWithLibrariesPage(limit: number, offset: number): Array<UserRow & { payload: string | null }> {
+  return getDb().prepare(`
+    SELECT users.*, user_libraries.payload FROM users
+    LEFT JOIN user_libraries ON user_libraries.user_id = users.id
+    ORDER BY users.created_at ASC
+    LIMIT ? OFFSET ?
+  `).all(limit, offset) as Array<UserRow & { payload: string | null }>;
 }
 
 export function getWearHistoryForUser(userId: number): Array<{ slug: string; wornOn: string }> {

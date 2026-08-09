@@ -1,5 +1,5 @@
 import cron from 'node-cron';
-import { getAllColognes, updateSellersForCologne } from '../db';
+import { getAllColognes, updateSellersForCologne, purgeExpired } from '../db';
 import { scrapeBingShopping } from '../scrapers/bingShopping';
 import { scrapeAllSites } from '../scrapers/siteScrapers';
 import { whoisEnabled } from '../utils/flags';
@@ -57,6 +57,7 @@ export function startDailyUpdate(): void {
   // Run every day at 3:00 AM
   cron.schedule('0 3 * * *', () => {
     console.log('[Daily Update] Starting scheduled price refresh...');
+    purgeExpired(); // clear expired sessions / OAuth nonces
     refreshAllPrices().catch(err => console.error('[Daily Update] Fatal error:', err));
   });
 

@@ -9,7 +9,7 @@ import HowItWorks from './components/HowItWorks';
 import TrustedSellers from './components/TrustedSellers';
 import FeatureNotReady from './components/FeatureNotReady';
 import Settings from './components/Settings';
-import { searchCologne, suggestCologne, fetchFragranceInfo, fetchPrices, identifyCologneFromImage, googleSignInUrl, fetchMe, signOutServer, clearSuggestionCache, AUTH_TOKEN_KEY, AuthUser } from './apiService';
+import { searchCologne, suggestCologne, fetchFragranceInfo, fetchPrices, identifyCologneFromImage, googleSignInUrl, fetchMe, signOutServer, clearSuggestionCache, AUTH_TOKEN_KEY, PRIVACY_POLICY_URL, AuthUser } from './apiService';
 import { ScentDetails, FragranceSuggestion, FragranceInfo } from './types';
 
 // Build a partial ScentDetails from fast /api/info data — sellers fill in later.
@@ -41,16 +41,32 @@ const App: React.FC = () => {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [ageConfirmed, setAgeConfirmed] = useState<boolean>(() => !!localStorage.getItem('sniffer:ageConfirmed'));
 
-  // Session restore + capture ?token= coming back from the Google flow
+  const confirmAge = () => {
+    localStorage.setItem('sniffer:ageConfirmed', '1');
+    setAgeConfirmed(true);
+  };
+
+  // Session restore + capture the token coming back from the Google flow.
+  // The server returns it in the URL fragment (#token=) so it never hits a
+  // server log or Referer header; we still read ?token= for backward-compat.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const incomingToken = params.get('token');
+    const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
+    const hashParams = new URLSearchParams(hash);
+    const queryParams = new URLSearchParams(window.location.search);
+    const incomingToken = hashParams.get('token') ?? queryParams.get('token');
     if (incomingToken) {
       localStorage.setItem(AUTH_TOKEN_KEY, incomingToken);
-      params.delete('token');
-      const remaining = params.toString();
-      window.history.replaceState({}, '', window.location.pathname + (remaining ? `?${remaining}` : ''));
+      hashParams.delete('token');
+      queryParams.delete('token');
+      const remainingQuery = queryParams.toString();
+      const remainingHash = hashParams.toString();
+      window.history.replaceState(
+        {},
+        '',
+        window.location.pathname + (remainingQuery ? `?${remainingQuery}` : '') + (remainingHash ? `#${remainingHash}` : ''),
+      );
     }
     const token = localStorage.getItem(AUTH_TOKEN_KEY);
     if (token) {
@@ -279,6 +295,27 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[#FFFDF9] relative overflow-x-hidden">
+      {/* Age gate (COPPA): block first use until the visitor confirms 13+. */}
+      {!ageConfirmed && (
+        <div className="fixed inset-0 z-[100] bg-amber-950/40 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="bg-[#FFFDF9] border border-amber-100 rounded-3xl max-w-md w-full p-8 shadow-2xl text-center">
+            <p className="text-amber-700 font-bold uppercase text-[10px] tracking-[0.3em] mb-3">Before we start</p>
+            <h2 className="serif text-3xl text-amber-900 mb-3">A quick check</h2>
+            <p className="text-amber-900/60 text-sm mb-6 leading-relaxed">
+              Sniffer is intended for people aged 13 and older. Please confirm your age. See our{' '}
+              <a href={PRIVACY_POLICY_URL} target="_blank" rel="noreferrer" className="underline text-amber-700 hover:text-amber-900">Privacy Policy</a>{' '}
+              for how your data is handled.
+            </p>
+            <button
+              onClick={confirmAge}
+              className="w-full py-3 bg-amber-900 text-white rounded-full font-bold uppercase text-[11px] tracking-widest hover:bg-amber-800 transition-colors"
+            >
+              I'm 13 or older — continue
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Background elements */}
       <div className="fixed inset-0 pointer-events-none opacity-10">
         <img 
@@ -368,7 +405,7 @@ const App: React.FC = () => {
             <div className="space-y-4">
               <h5 className="font-bold text-amber-900 text-[10px] uppercase tracking-[0.3em]">Legal</h5>
               <ul className="text-amber-900/60 text-xs space-y-2">
-                <li><button onClick={() => triggerFeatureNotReady('Privacy Policy')} className="hover:text-amber-900 transition-colors text-left">Privacy Policy</button></li>
+                <li><a href={PRIVACY_POLICY_URL} target="_blank" rel="noreferrer" className="hover:text-amber-900 transition-colors text-left block">Privacy Policy</a></li>
                 <li><button onClick={() => triggerFeatureNotReady('Terms of Use')} className="hover:text-amber-900 transition-colors text-left">Terms of Use</button></li>
                 <li><button onClick={() => setCurrentView('trusted-sellers')} className="hover:text-amber-900 transition-colors text-left">Trust Center</button></li>
               </ul>

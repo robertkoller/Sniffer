@@ -2,9 +2,9 @@
   "name": "sniffer-server",
   "version": "1.0.0",
   "scripts": {
-    "dev": "ts-node src/index.ts",
+    "dev": "NODE_ENV=development ENABLE_DEV_LOGIN=true ts-node src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "NODE_ENV=production node dist/index.js",
     "setup": "npx playwright install chromium",
     "clear-db": "ts-node src/clearDb.ts",
     "list-colognes": "ts-node src/listColognes.ts",

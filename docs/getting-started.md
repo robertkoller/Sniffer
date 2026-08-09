@@ -27,7 +27,7 @@ npm install
 npm run dev       # starts on http://localhost:3000 (Vite hot-reloads)
 ```
 
-## 3. App (Sniffy)
+## 3. App (Sniffy) — React Native
 
 ```bash
 cd mobile
@@ -37,6 +37,17 @@ npx expo start    # press i for iOS Simulator, or scan the QR with Expo Go
 
 - On the **iOS Simulator**, `localhost:3001` works (it shares your Mac's network).
 - On a **physical device**, `localhost` is the phone — you must point the app's `BASE_URL` (`mobile/services/api.ts`) at your Mac's LAN IP or a deployed/tunnel URL. See [configuration.md](configuration.md).
+
+## 3b. App (Sniffy) — native Swift
+
+The native SwiftUI version lives in `mobile2/`. It needs **Xcode installed** (for the iOS SDK) but you don't have to open the GUI:
+
+```bash
+cd mobile2
+./run.sh          # builds, boots a simulator, installs, launches
+```
+
+Or open `mobile2/Sniffy.xcodeproj` in Xcode and hit Run. In DEBUG it points at `localhost:3001`. See [swift-app.md](swift-app.md).
 
 ## Handy server scripts (`server/`)
 

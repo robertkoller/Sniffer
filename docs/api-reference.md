@@ -6,13 +6,15 @@ Routes are defined in `server/src/routes/` and mounted in `server/src/index.ts`.
 
 ## Rate limits
 
+Limiters run **before** body parsing. See [security.md](security.md).
+
 - **General:** 100 requests / 15 min per IP (all endpoints).
-- **Strict:** 5 requests / 15 min per IP on `/api/search` and `/api/identify` (the expensive full scrapes).
-- `/api/suggest`, `/api/info`, and `/api/prices` are only under the general limit.
+- **Strict:** 5 / 15 min on `/api/search` and `/api/identify` (the expensive full scrapes).
+- **Scrape:** 40 / 15 min on `/api/suggest`, `/api/info`, `/api/prices`, `/api/stores/nearby`.
 
 ## Auth
 
-Send `Authorization: Bearer <token>` to authenticate. Tokens come from the sign-in flows below and last 90 days. Endpoints marked 🔒 require a valid token.
+Send `Authorization: Bearer <token>` to authenticate. Tokens come from the sign-in flows below, last 90 days, and are stored **hashed** server-side. Endpoints marked 🔒 require a valid token.
 
 ---
 
@@ -68,16 +70,16 @@ Body `{ genderPreference?, scentFamilies? }`. Saves the taste profile (per-accou
 ## Auth (`routes/auth.ts`)
 
 ### `GET /api/auth/google/start?return=<url>`
-Begins the Google OAuth flow; redirects to Google. `return` is where to send the browser back with the token (the website origin, or the app's `sniffy://` deep link).
+Begins the Google OAuth flow. Validates `return` against an allowlist, mints a single-use anti-CSRF `state` nonce (return URL held server-side), then redirects to Google.
 
 ### `GET /api/auth/google/callback`
-Google redirects here with a code; the server exchanges it, creates/updates the user, issues a token, and redirects to `return?token=<token>`.
+Google redirects here with `code` + `state`. The server **consumes** the nonce (unknown/expired/replayed → 400), exchanges the code, creates/updates the user, issues a token, and redirects back — token in the URL **fragment** (`return#token=`) for web, **query** (`return?token=`) for app deep links.
 
 ### `POST /api/auth/google`
-Body `{ idToken }`. For native Google SDK flows; verifies the ID token and returns `{ token, user }`.
+Body `{ idToken }`. For native Google SDK flows; requires `GOOGLE_CLIENT_ID` and always verifies the token `aud`. Returns `{ token, user }`.
 
 ### `POST /api/auth/dev`
-Body `{ email, name }`. Local-only dev login (disabled when `NODE_ENV=production`). Returns `{ token, user }`.
+Body `{ email, name }`. Password-less dev login — **off unless `ENABLE_DEV_LOGIN=true`** (set by `npm run dev`; never in production). Returns `{ token, user }`.
 
 ### `GET /api/auth/me` 🔒
 Returns `{ user }` for the current token.
@@ -104,11 +106,21 @@ The user's full wear history (`[{ slug, wornOn }]`) — used for the wear graphs
 ### `GET /api/social/me` 🔒
 The signed-in user's own public profile (showcase, currently wearing, stats).
 
-### `GET /api/social/users`
-Public community directory: everyone's name/picture, bottle count, top fragrance, currently wearing.
+### `GET /api/social/users?limit=&offset=` 🔒
+Paginated community directory (name/picture, bottle count, top fragrance, currently wearing). `limit` 1–50 (default 30). Response: `{ users, page: { limit, offset, total, hasMore } }`.
 
-### `GET /api/social/users/:id`
+### `GET /api/social/users/:id` 🔒
 One user's full public profile.
+
+---
+
+## Legal (`routes/legal.ts`)
+
+### `GET /privacy`
+The privacy policy as a styled HTML page. Linked from all clients. (Not under `/api`.)
+
+### `GET /api/legal/privacy`
+Machine-readable policy: `{ version, effectiveDate, minimumAge, sections }`. See [privacy-and-age-gate.md](privacy-and-age-gate.md).
 
 ---
 
