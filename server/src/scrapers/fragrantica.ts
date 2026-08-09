@@ -1,5 +1,6 @@
-import { chromium } from 'playwright';
+import axios from 'axios';
 import type { ScrapedCologne } from '../types';
+import { getSharedBrowser } from './browser';
 
 const BASE_URL = 'https://www.fragrantica.com';
 
@@ -63,13 +64,165 @@ export interface FragranceSuggestion {
   url: string;
 }
 
-// Lightweight multi-result search: load the Fragrantica search page once and
-// return the Algolia hits in relevance order (deduplicated across indexes).
+// Fragrantica's search is powered by Algolia. Rather than drive a whole headless
+// browser just to intercept that one request (~10s), we call the Algolia REST API
+// directly (~200-500ms). The catch: Fragrantica's front-end key is a *secured*,
+// time-limited key (it base64-decodes to `...validUntil=<epoch>`), so we harvest
+// the current one from their page occasionally and refresh it before it expires
+// or when Algolia rejects it. The browser scrape stays as a fallback.
+const ALGOLIA_INDEX = 'fragrantica_perfumes';
+const ALGOLIA_ATTRS = ['naslov', 'dizajner', 'godina', 'id', 'slug', 'thumbnail', 'spol'];
+
+interface AlgoliaCreds { appId: string; apiKey: string; index: string; validUntil: number; }
+let algoliaCreds: AlgoliaCreds | null = null;
+
+// Secured Algolia keys base64-decode to a string ending in `validUntil=<epoch>`.
+function decodeValidUntil(apiKey: string): number {
+  try {
+    const decoded = Buffer.from(apiKey, 'base64').toString('utf8');
+    const match = decoded.match(/validUntil=(\d+)/);
+    return match ? parseInt(match[1], 10) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Load a Fragrantica search page in the shared browser and capture the Algolia
+// request its front-end fires, pulling appId/key/index off it.
+async function harvestAlgoliaCreds(): Promise<AlgoliaCreds> {
+  const browser = await getSharedBrowser();
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 900 },
+    locale: 'en-US',
+  });
+  const page = await context.newPage();
+  let found: AlgoliaCreds | null = null;
+
+  page.on('request', request => {
+    if (found || request.method() !== 'POST' || !request.url().includes('algolia.net')) return;
+    try {
+      const url = new URL(request.url());
+      const apiKey = url.searchParams.get('x-algolia-api-key') ?? '';
+      const appId = (url.searchParams.get('x-algolia-application-id') ?? '').toUpperCase();
+      const body = JSON.parse(request.postData() ?? '{}') as { requests?: Array<{ indexName?: string }> };
+      const index = body.requests?.[0]?.indexName ?? ALGOLIA_INDEX;
+      if (apiKey && appId) {
+        found = { appId, apiKey, index, validUntil: decodeValidUntil(apiKey) };
+      }
+    } catch {
+      // Not the request we want — ignore.
+    }
+  });
+
+  try {
+    await page.goto(`${BASE_URL}/search/?query=aventus`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await waitForResults(() => found !== null, 8000);
+  } finally {
+    await context.close();
+  }
+
+  if (!found) throw new Error('Could not harvest Algolia credentials from Fragrantica');
+  const credentials = found as AlgoliaCreds;
+  console.log(`[Algolia] Harvested key for ${credentials.appId}/${credentials.index} (valid until ${new Date(credentials.validUntil * 1000).toISOString()})`);
+  return credentials;
+}
+
+// Cached creds, refreshed a day before expiry (or on demand after a rejection).
+async function getAlgoliaCreds(forceRefresh = false): Promise<AlgoliaCreds> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const stale = !algoliaCreds || algoliaCreds.validUntil - nowSec < 86400;
+  if (forceRefresh || stale) {
+    algoliaCreds = await harvestAlgoliaCreds();
+  }
+  return algoliaCreds!;
+}
+
+// The fast path: query Algolia over HTTP with the harvested key.
+async function suggestViaAlgolia(query: string, limit: number): Promise<FragranceSuggestion[]> {
+  const expandedQuery = expandAbbreviations(query);
+
+  async function runQuery(creds: AlgoliaCreds): Promise<Array<Record<string, unknown>>> {
+    const params = new URLSearchParams({
+      attributesToRetrieve: JSON.stringify(ALGOLIA_ATTRS),
+      hitsPerPage: '60',
+      query: expandedQuery,
+    }).toString();
+    const response = await axios.post(
+      `https://${creds.appId.toLowerCase()}-dsn.algolia.net/1/indexes/*/queries`,
+      { requests: [{ indexName: creds.index, params }] },
+      {
+        headers: {
+          'x-algolia-api-key': creds.apiKey,
+          'x-algolia-application-id': creds.appId,
+          'content-type': 'application/json',
+        },
+        timeout: 8000,
+      },
+    );
+    const data = response.data as { results?: Array<{ hits?: Array<Record<string, unknown>> }> };
+    return data.results?.[0]?.hits ?? [];
+  }
+
+  let creds = await getAlgoliaCreds();
+  let hits: Array<Record<string, unknown>>;
+  try {
+    hits = await runQuery(creds);
+  } catch (err) {
+    // 401/403 means the key rotated out from under us — re-harvest once and retry.
+    if (axios.isAxiosError(err) && (err.response?.status === 403 || err.response?.status === 401)) {
+      creds = await getAlgoliaCreds(true);
+      hits = await runQuery(creds);
+    } else {
+      throw err;
+    }
+  }
+
+  const seenIds = new Set<string>();
+  const suggestions: FragranceSuggestion[] = [];
+  for (const hit of hits) {
+    const id = String(hit['objectID'] ?? hit['id'] ?? '');
+    const name = String(hit['naslov'] ?? '');
+    const brand = String(hit['dizajner'] ?? '');
+    if (!id || !name || seenIds.has(id)) continue;
+    seenIds.add(id);
+    const slug = hit['slug'] as string | undefined;
+    suggestions.push({
+      id,
+      name,
+      brand,
+      year: typeof hit['godina'] === 'number' ? hit['godina'] as number : undefined,
+      gender: typeof hit['spol'] === 'string' ? hit['spol'] as string : undefined,
+      thumbnail: typeof hit['thumbnail'] === 'string' ? hit['thumbnail'] as string : undefined,
+      imageUrl: imageUrlForPerfumeId(id),
+      url: slug ? `${BASE_URL}/perfume/${slug}-${id}.html` : `${BASE_URL}/search/?query=${encodeURIComponent(name)}`,
+    });
+    if (suggestions.length >= limit) break;
+  }
+  return suggestions;
+}
+
+// Public entry point: try the fast Algolia HTTP path, fall back to the browser
+// scrape if it fails (key unharvestable, network, zero hits).
 export async function suggestFragrantica(query: string, limit = 12): Promise<FragranceSuggestion[]> {
+  try {
+    const viaAlgolia = await suggestViaAlgolia(query, limit);
+    if (viaAlgolia.length > 0) return viaAlgolia;
+    console.warn('[Fragrantica] Algolia returned 0 hits; falling back to browser scrape');
+  } catch (err) {
+    console.warn('[Fragrantica] Algolia suggest failed; falling back to browser scrape:', (err as Error).message);
+  }
+  return suggestFragranticaViaBrowser(query, limit);
+}
+
+// Lightweight multi-result search via the browser: load the Fragrantica search
+// page once and return the Algolia hits in relevance order. Fallback for the
+// direct-HTTP path above.
+async function suggestFragranticaViaBrowser(query: string, limit = 12): Promise<FragranceSuggestion[]> {
   const expandedQuery = expandAbbreviations(query);
   console.log(`[Fragrantica] Suggesting for: "${expandedQuery}"`);
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await getSharedBrowser();
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     viewport: { width: 1280, height: 900 },
@@ -128,7 +281,7 @@ export async function suggestFragrantica(query: string, limit = 12): Promise<Fra
     await waitForResults(() => suggestions.length >= 3, 8000);
     return suggestions.slice(0, limit);
   } finally {
-    await browser.close();
+    await context.close();
   }
 }
 
@@ -137,7 +290,7 @@ async function searchFragranticaPage(query: string): Promise<{ name: string; bra
   // Expand abbreviations so "mfk grand soir" gives you "Maison Francis Kurkdjian Grand Soir"
   const expandedQuery = expandAbbreviations(query);
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await getSharedBrowser();
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     viewport: { width: 1280, height: 900 },
@@ -279,7 +432,7 @@ async function searchFragranticaPage(query: string): Promise<{ name: string; bra
     await waitForResults(() => bestHit !== null, 8000);
     return bestHit;
   } finally {
-    await browser.close();
+    await context.close();
   }
 }
 
@@ -289,7 +442,7 @@ async function scrapeDetailPage(cologneUrl: string): Promise<{
   notes: { top: string[]; middle: string[]; base: string[] };
   noteImages: Record<string, string>;
 }> {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await getSharedBrowser();
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     viewport: { width: 1280, height: 900 },
@@ -390,7 +543,7 @@ async function scrapeDetailPage(cologneUrl: string): Promise<{
       noteImages: data.noteImages,
     };
   } finally {
-    await browser.close();
+    await context.close();
   }
 }
 

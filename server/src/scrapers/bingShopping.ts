@@ -1,5 +1,5 @@
-import { chromium } from 'playwright';
 import type { Page } from 'playwright';
+import { getSharedBrowser } from './browser';
 import type { ScrapedSeller } from '../types';
 import { scoreSellerTrust, computeReferencePrice } from './trustScorer';
 import { getDomainAgeDays } from './whoisLookup';
@@ -204,16 +204,7 @@ export async function scrapeBingShopping(query: string, brand?: string, whoisEna
   const url = `https://www.bing.com/shop?q=${encodeURIComponent(query)}&FORM=SHOPTB`;
   console.log(`[Bing Shopping] Searching: ${url}`);
 
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      '--disable-blink-features=AutomationControlled',
-      '--no-sandbox',
-      '--disable-dev-shm-usage',
-      '--no-first-run',
-      '--disable-gpu',
-    ],
-  });
+  const browser = await getSharedBrowser();
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     viewport: { width: 1366, height: 768 },
@@ -281,6 +272,6 @@ export async function scrapeBingShopping(query: string, brand?: string, whoisEna
       };
     });
   } finally {
-    await browser.close();
+    await context.close();
   }
 }

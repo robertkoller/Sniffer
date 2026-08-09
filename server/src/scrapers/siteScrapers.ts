@@ -1,5 +1,5 @@
-import { chromium } from 'playwright';
-import type { Page } from 'playwright';
+import type { Page, BrowserContext } from 'playwright';
+import { getSharedBrowser } from './browser';
 import type { ScrapedSeller } from '../types';
 import { scoreSellerTrust, computeReferencePrice } from './trustScorer';
 
@@ -16,14 +16,6 @@ interface ProductMatch {
 // -----------------------------------------------------------------------
 // Shared browser config (same stealth setup as bingShopping.ts)
 // -----------------------------------------------------------------------
-
-const STEALTH_ARGS = [
-  '--disable-blink-features=AutomationControlled',
-  '--no-sandbox',
-  '--disable-dev-shm-usage',
-  '--no-first-run',
-  '--disable-gpu',
-];
 
 // -----------------------------------------------------------------------
 // Scoring — runs in Node.js after page.evaluate returns raw card data
@@ -415,12 +407,11 @@ const SITE_SCRAPERS: Array<{
 ];
 
 export async function scrapeAllSites(brand: string, name: string): Promise<ScrapedSeller[]> {
-  const browser = await chromium.launch({
-    headless: true,
-    args: STEALTH_ARGS,
-  });
+  const browser = await getSharedBrowser();
 
   let results: Array<{ siteName: string; match: ProductMatch }> = [];
+  // We share one long-lived browser, so close our own contexts (not the browser).
+  const openContexts: BrowserContext[] = [];
 
   try {
     const newPage: PageFactory = async () => {
@@ -431,6 +422,7 @@ export async function scrapeAllSites(brand: string, name: string): Promise<Scrap
         timezoneId: 'America/Los_Angeles',
         extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
       });
+      openContexts.push(context);
       await context.addInitScript(() => {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
       });
@@ -453,7 +445,7 @@ export async function scrapeAllSites(brand: string, name: string): Promise<Scrap
       .map(r => r.value!);
 
   } finally {
-    await browser.close();
+    await Promise.allSettled(openContexts.map(context => context.close()));
   }
 
   console.log(`[SiteScrapers] Got prices from ${results.length}/${SITE_SCRAPERS.length} sites`);

@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { getSharedBrowser } from './browser';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -8,7 +8,7 @@ export async function identifyFromGoogleLens(base64Image: string): Promise<strin
   const tempPath = path.join(os.tmpdir(), `sniffer_${Date.now()}.jpg`);
   fs.writeFileSync(tempPath, Buffer.from(base64Image, 'base64'));
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await getSharedBrowser();
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     viewport: { width: 1280, height: 900 },
@@ -53,7 +53,7 @@ export async function identifyFromGoogleLens(base64Image: string): Promise<strin
     console.log(`[Google Lens] Identified: "${identified}"`);
     return identified;
   } finally {
-    await browser.close();
+    await context.close();
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
   }
 }
