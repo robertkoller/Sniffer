@@ -92,7 +92,17 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack, pricesLoading =
   const getPrice = (p: string) =>
     p ? parseFloat(p.replace(/[^0-9.]/g, '')) : Infinity;
 
-  const sellers = data.onlineSellers || [];
+  const allSellers = data.onlineSellers || [];
+
+  // Standardize on the full 3.4oz (100ml) bottle by default. Keep listings whose
+  // size we couldn't read off Bing's truncated card (sizeOz == null) — they're
+  // shown labeled "size unverified" so breadth stays intact — and drop only the
+  // ones confirmed to be a different size (1.7oz, 50ml, testers, etc.). If that
+  // leaves nothing, fall back to everything rather than an empty page.
+  const isStandardOrUnknown = (s: Seller) =>
+    s.sizeOz == null || (s.sizeOz >= 3.2 && s.sizeOz <= 3.6);
+  const sizeFiltered = allSellers.filter(isStandardOrUnknown);
+  const sellers = sizeFiltered.length > 0 ? sizeFiltered : allSellers;
 
   const prices = sellers
     .map(s => getPrice(s.price))
@@ -346,6 +356,18 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack, pricesLoading =
                             <CredibilityBadge score={seller.credibilityScore} />
                             {seller.isTrusted && (
                               <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest">Verified Seller</span>
+                            )}
+                            {(() => {
+                              const trustPct = seller.credibilityScore <= 1 ? seller.credibilityScore * 100 : seller.credibilityScore;
+                              return !seller.isTrusted && trustPct < 70 ? (
+                                <span className="flex items-center gap-1 text-[9px] font-black text-rose-600 uppercase tracking-widest">
+                                  <AlertTriangle className="w-3 h-3" />
+                                  Low trust — verify seller
+                                </span>
+                              ) : null;
+                            })()}
+                            {seller.sizeOz == null && (
+                              <span className="text-[9px] font-black text-amber-500 uppercase tracking-widest">Size unverified</span>
                             )}
                           </div>
                         </div>

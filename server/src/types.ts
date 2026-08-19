@@ -22,6 +22,7 @@ export interface SellerRow {
   url: string;
   credibility_score: number;
   is_trusted: number; // SQLite stores booleans as 0/1
+  size_oz: number | null; // detected bottle size in oz; null = size unknown (Bing truncates)
   updated_at: number;
 }
 
@@ -73,6 +74,7 @@ export interface ScrapedSeller {
   url: string;
   credibilityScore: number;
   isTrusted: boolean;
+  sizeOz?: number | null; // detected bottle size in oz; null/undefined = size unknown
 }
 
 // Matches the client's ScentDetails interface
@@ -93,6 +95,7 @@ export interface ScentDetails {
     url: string;
     credibilityScore: number;
     isTrusted: boolean;
+    sizeOz?: number | null;
   }[];
   physicalStores: {
     name: string;

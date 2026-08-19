@@ -139,6 +139,12 @@ export function initDatabase(): void {
     db.exec(`ALTER TABLE colognes ADD COLUMN note_images TEXT`);
   }
 
+  // Migrations: columns added to sellers after the initial schema
+  const sellerColumns = db.prepare(`PRAGMA table_info(sellers)`).all() as Array<{ name: string }>;
+  if (!sellerColumns.some(column => column.name === 'size_oz')) {
+    db.exec(`ALTER TABLE sellers ADD COLUMN size_oz REAL`);
+  }
+
   // The settings table now only holds the legacy single-user taste profile;
   // WHOIS is env-controlled and the AI search feature was removed.
 
@@ -192,7 +198,7 @@ export function getCologneBySlug(slug: string): ScentDetails | null {
 export function saveCologneWithSellers(
   slug: string,
   cologne: { name: string; brand: string; overview: string; notes: { top: string[]; middle: string[]; base: string[] }; fragrantica_url: string; image_url?: string | null; note_images?: string | null },
-  sellers: { name: string; price: string; url: string; credibilityScore: number; isTrusted: boolean }[]
+  sellers: { name: string; price: string; url: string; credibilityScore: number; isTrusted: boolean; sizeOz?: number | null }[]
 ): ScentDetails {
   const db = getDb();
 
@@ -231,8 +237,8 @@ export function saveCologneWithSellers(
   db.prepare('DELETE FROM sellers WHERE cologne_id = ?').run(cologneRow.id);
 
   const insertSeller = db.prepare(`
-    INSERT INTO sellers (cologne_id, name, price, url, credibility_score, is_trusted)
-    VALUES (@cologne_id, @name, @price, @url, @credibility_score, @is_trusted)
+    INSERT INTO sellers (cologne_id, name, price, url, credibility_score, is_trusted, size_oz)
+    VALUES (@cologne_id, @name, @price, @url, @credibility_score, @is_trusted, @size_oz)
   `);
 
   for (const seller of sellers) {
@@ -243,6 +249,7 @@ export function saveCologneWithSellers(
       url: seller.url,
       credibility_score: seller.credibilityScore,
       is_trusted: seller.isTrusted ? 1 : 0,
+      size_oz: seller.sizeOz ?? null,
     });
   }
 
@@ -250,13 +257,13 @@ export function saveCologneWithSellers(
   return buildScentDetails(cologneRow, sellerRows, []);
 }
 
-export function updateSellersForCologne(cologneId: number, sellers: { name: string; price: string; url: string; credibilityScore: number; isTrusted: boolean }[]): void {
+export function updateSellersForCologne(cologneId: number, sellers: { name: string; price: string; url: string; credibilityScore: number; isTrusted: boolean; sizeOz?: number | null }[]): void {
   const db = getDb();
   db.prepare('DELETE FROM sellers WHERE cologne_id = ?').run(cologneId);
 
   const insertSeller = db.prepare(`
-    INSERT INTO sellers (cologne_id, name, price, url, credibility_score, is_trusted)
-    VALUES (@cologne_id, @name, @price, @url, @credibility_score, @is_trusted)
+    INSERT INTO sellers (cologne_id, name, price, url, credibility_score, is_trusted, size_oz)
+    VALUES (@cologne_id, @name, @price, @url, @credibility_score, @is_trusted, @size_oz)
   `);
 
   for (const seller of sellers) {
@@ -267,6 +274,7 @@ export function updateSellersForCologne(cologneId: number, sellers: { name: stri
       url: seller.url,
       credibility_score: seller.credibilityScore,
       is_trusted: seller.isTrusted ? 1 : 0,
+      size_oz: seller.sizeOz ?? null,
     });
   }
 }
@@ -516,6 +524,7 @@ function buildScentDetails(cologne: CologneRow, sellers: SellerRow[], stores: St
       url:              s.url,
       credibilityScore: s.credibility_score,
       isTrusted:        s.is_trusted === 1,
+      sizeOz:           s.size_oz ?? null,
     })),
     physicalStores: stores.map(s => ({
       name:     s.name,

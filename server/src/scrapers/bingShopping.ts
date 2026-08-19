@@ -78,6 +78,24 @@ function resolveUrl(sellerName: string): string {
   return `https://www.${key.replace(/[^a-z0-9]/g, '')}.com`;
 }
 
+// Ad-network trackers / redirectors that are never the real store — mirror of the
+// set unwrapTrackingUrl() follows inside the page, plus bing.com itself.
+const TRACKER_HOSTS = /(^|\.)(bing\.com|dartsearch\.net|xg4ken\.com|agkn\.com|clickserve|doubleclick\.net|kenshoo|go\.redirectingat\.com|jdoqocy\.com|dpbolvw\.net|anrdoezrs\.net|tkqlhce\.com)/i;
+
+// The URL to score trust against. Prefer the listing's real (unwrapped) destination
+// URL so unknown discounters get judged on their ACTUAL domain — resolveUrl(name)
+// only guesses `www.<name>.com`, which is wrong for anyone outside the known map.
+// Fall back to the name guess when the href is still a tracker or unparseable.
+function scoringUrlFor(href: string, sellerName: string): string {
+  try {
+    const parsed = new URL(href);
+    if (/^https?:$/.test(parsed.protocol) && !TRACKER_HOSTS.test(parsed.hostname)) {
+      return href;
+    }
+  } catch { /* fall through */ }
+  return resolveUrl(sellerName);
+}
+
 
 async function scrapeOnePage(
   page: Page,
@@ -85,22 +103,38 @@ async function scrapeOnePage(
   query: string,
   seenSellers: Set<string>,
   limit: number,
-): Promise<Array<{ name: string; price: string; href: string; title: string }>> {
+): Promise<Array<{ name: string; price: string; href: string; title: string; sizeOz: number | null }>> {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
   // Wait for offer cards to render (they load async); fall through after 12s either way
   await page.waitForSelector('.br-gOffCard', { timeout: 12000 }).catch(() => {});
   await page.waitForTimeout(1500);
 
-  const raw = await page.evaluate((queryStr: string): Array<{ name: string; price: string; href: string; title: string }> => {
-    function hasWrongSize(text: string): boolean {
-      const lower = text.toLowerCase();
-      for (const m of lower.matchAll(/\b(\d+(?:\.\d+)?)\s*(?:fl\.?\s*)?oz\b/g)) {
-        if (parseFloat(m[1]) < 3.2 || parseFloat(m[1]) > 3.6) return true;
+  const raw = await page.evaluate((queryStr: string): Array<{ name: string; price: string; href: string; title: string; sizeOz: number | null }> => {
+    // Find a bottle size in oz from any of: title, card text, or the destination
+    // URL slug (stores often put "-100-ml" / "-3-4-oz" in the path). Bing truncates
+    // titles, so the URL is often the only place the size survives. Null = no size
+    // stated anywhere.
+    function detectSizeOz(...texts: string[]): number | null {
+      for (const raw of texts) {
+        if (!raw) continue;
+        const lower = raw.toLowerCase().replace(/[_/]+/g, '-');
+        const ozMatch = lower.match(/(\d+(?:[.\-]\d+)?)\s*-?\s*(?:fl\.?\s*-?\s*)?oz\b/);
+        if (ozMatch) {
+          const token = ozMatch[1];
+          let value = parseFloat(token.replace('-', '.'));
+          // Store URL slugs routinely drop the decimal point ("34-oz" = 3.4 oz,
+          // "17-oz" = 1.7). A bare integer larger than any real cologne bottle is a
+          // dropped-decimal — restore it so 3.4oz bottles aren't mis-tagged as 34.
+          if (!/[.\-]/.test(token) && value > 13) value = value / 10;
+          if (!isNaN(value)) return value;
+        }
+        const mlMatch = lower.match(/(\d+(?:[.\-]\d+)?)\s*-?\s*ml\b/);
+        if (mlMatch) {
+          const value = parseFloat(mlMatch[1].replace('-', '.'));
+          if (!isNaN(value)) return value / 29.5735; // ml -> oz
+        }
       }
-      for (const m of lower.matchAll(/\b(\d+(?:\.\d+)?)\s*ml\b/g)) {
-        if (parseFloat(m[1]) < 90 || parseFloat(m[1]) > 110) return true;
-      }
-      return false;
+      return null;
     }
 
     // Decode the real destination URL from a Bing aclick redirect.
@@ -192,7 +226,7 @@ async function scrapeOnePage(
     const DUPE_TYPES        = /our version of|type\b|inspired by|dupe|fragrance oil|impression of/i;
 
     const cards: Element[] = Array.from(document.querySelectorAll('.br-gOffCard'));
-    const results: Array<{ name: string; price: string; href: string; title: string }> = [];
+    const results: Array<{ name: string; price: string; href: string; title: string; sizeOz: number | null }> = [];
 
     for (const card of cards) {
       const priceEl  = card.querySelector('.br-price');
@@ -210,18 +244,22 @@ async function scrapeOnePage(
       const cardText  = card.textContent ?? '';
       const actualUrl = unwrapTrackingUrl(decodeActualUrl(href));
 
-      if (hasWrongSize(cardText) || hasWrongSize(title)) continue;
+      // Keep every size — breadth is the point. Tag the detected size (from title,
+      // card text, or destination URL slug) so the client can filter/label; null
+      // means Bing truncated it away and we couldn't tell. Still drop wrong PRODUCTS
+      // (samples, dupes, body sprays) and off-fragrance matches.
       if (!title || !titleMatchesQuery(title)) continue;
       if (SAMPLE_TYPES.test(cardText) || SAMPLE_TYPES.test(title) || SAMPLE_URL.test(actualUrl)) continue;
       if (DUPE_TYPES.test(cardText)) continue;
       if (BAD_PRODUCT_TYPES.test(cardText) || BAD_PRODUCT_URL.test(actualUrl)) continue;
 
-      results.push({ name: seller, price, href: actualUrl, title });
+      const sizeOz = detectSizeOz(title, cardText, actualUrl);
+      results.push({ name: seller, price, href: actualUrl, title, sizeOz });
     }
     return results;
   }, query);
 
-  const out: Array<{ name: string; price: string; href: string; title: string }> = [];
+  const out: Array<{ name: string; price: string; href: string; title: string; sizeOz: number | null }> = [];
   for (const r of raw) {
     if (out.length >= limit) break;
     if (seenSellers.has(r.name.toLowerCase())) continue;
@@ -279,14 +317,14 @@ export async function scrapeBingShopping(query: string, brand?: string, whoisEna
       : sellers;
     console.log(`[Bing Shopping] After price floor ($${priceFloor.toFixed(2)}): ${plausibleSellers.length} sellers`);
 
-    // Optionally enrich with domain age via RDAP/WHOIS (run in parallel, capped at 5s each)
+    // Optionally enrich with domain age via RDAP/WHOIS (run in parallel, capped at 5s each).
+    // Look up the REAL destination host, not a guess from the seller name.
     const domainAges = new Map<string, number | null>();
     if (whoisEnabled) {
       console.log('[Bing Shopping] Running WHOIS domain-age lookups...');
       await Promise.all(plausibleSellers.map(async s => {
-        const resolved = resolveUrl(s.name);
         try {
-          const hostname = new URL(resolved).hostname.replace(/^www\./, '');
+          const hostname = new URL(scoringUrlFor(s.href, s.name)).hostname.replace(/^www\./, '');
           const age = await getDomainAgeDays(hostname);
           domainAges.set(s.name, age);
         } catch { /* skip */ }
@@ -294,9 +332,8 @@ export async function scrapeBingShopping(query: string, brand?: string, whoisEna
     }
 
     return plausibleSellers.map(s => {
-      const resolvedUrl = resolveUrl(s.name);
       const { score, isTrusted } = scoreSellerTrust({
-        url:            resolvedUrl,
+        url:            scoringUrlFor(s.href, s.name),
         price:          s.price,
         brand:          brand ?? query,
         productText:    s.title,
@@ -309,6 +346,7 @@ export async function scrapeBingShopping(query: string, brand?: string, whoisEna
         url:              s.href,
         credibilityScore: score,
         isTrusted,
+        sizeOz:           s.sizeOz,
       };
     });
   } finally {

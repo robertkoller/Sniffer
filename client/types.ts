@@ -10,6 +10,7 @@ export interface Seller {
   url: string;
   credibilityScore: number; // 0-100
   isTrusted: boolean;
+  sizeOz?: number | null; // detected bottle size in oz; null/undefined = size unknown
 }
 
 export interface Store {
