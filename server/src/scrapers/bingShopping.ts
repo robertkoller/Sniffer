@@ -80,7 +80,7 @@ function resolveUrl(sellerName: string): string {
 
 // Ad-network trackers / redirectors that are never the real store — mirror of the
 // set unwrapTrackingUrl() follows inside the page, plus bing.com itself.
-const TRACKER_HOSTS = /(^|\.)(bing\.com|dartsearch\.net|xg4ken\.com|agkn\.com|clickserve|doubleclick\.net|kenshoo|go\.redirectingat\.com|jdoqocy\.com|dpbolvw\.net|anrdoezrs\.net|tkqlhce\.com)/i;
+const TRACKER_HOSTS = /(^|\.)(bing\.com|dartsearch\.net|xg4ken\.com|agkn\.com|clickcease\.com|clickserve|doubleclick\.net|kenshoo|go\.redirectingat\.com|jdoqocy\.com|dpbolvw\.net|anrdoezrs\.net|tkqlhce\.com)/i;
 
 // The URL to score trust against. Prefer the listing's real (unwrapped) destination
 // URL so unknown discounters get judged on their ACTUAL domain — resolveUrl(name)
@@ -94,6 +94,25 @@ function scoringUrlFor(href: string, sellerName: string): string {
     }
   } catch { /* fall through */ }
   return resolveUrl(sellerName);
+}
+
+// Build a looser retry query for when the full `brand + name` matches nothing.
+// Two things over-constrain niche/clone fragrances: a house brand stores omit
+// (Fragrantica "Fragrance World Barakkat Rouge 540" sells as just "Barakkat Rouge
+// 540"), and a trailing concentration descriptor. Drop the leading brand and the
+// trailing "… Extrait/Eau de Parfum/Toilette" so the core name can still match.
+function simplifyQuery(fullQuery: string, brand?: string): string {
+  let simplified = fullQuery.trim();
+  if (brand) {
+    const brandLower = brand.trim().toLowerCase();
+    if (brandLower && simplified.toLowerCase().startsWith(brandLower + ' ')) {
+      simplified = simplified.slice(brand.trim().length).trim();
+    }
+  }
+  simplified = simplified
+    .replace(/\s+(extrait\s+de\s+parfum|eau\s+de\s+parfum|eau\s+de\s+toilette|extrait|parfum|cologne|edp|edt)\s*$/i, '')
+    .trim();
+  return simplified;
 }
 
 
@@ -152,7 +171,7 @@ async function scrapeOnePage(
     // URL is embedded as a param — follow it so the link lands on the product page.
     function unwrapTrackingUrl(startUrl: string): string {
       const DEST_PARAMS = ['ds_dest_url', 'murl', 'l1', 'RU', 'ru', 'url', 'u', 'r', 'landingurl', 'destinationurl'];
-      const TRACKER = /(^|\.)(dartsearch\.net|xg4ken\.com|agkn\.com|clickserve|doubleclick\.net|kenshoo|go\.redirectingat\.com|jdoqocy\.com|dpbolvw\.net|anrdoezrs\.net|tkqlhce\.com)/i;
+      const TRACKER = /(^|\.)(dartsearch\.net|xg4ken\.com|agkn\.com|clickcease\.com|clickserve|doubleclick\.net|kenshoo|go\.redirectingat\.com|jdoqocy\.com|dpbolvw\.net|anrdoezrs\.net|tkqlhce\.com)/i;
       let current = startUrl;
       for (let hop = 0; hop < 5; hop++) {
         let parsed: URL;
@@ -177,7 +196,7 @@ async function scrapeOnePage(
     }
 
     const GENERIC = new Set([
-      'eau', 'de', 'toilette', 'parfum', 'cologne', 'fragrance', 'perfume',
+      'eau', 'de', 'toilette', 'parfum', 'extrait', 'cologne', 'fragrance', 'perfume',
       'spray', 'for', 'men', 'mens', 'him', 'women', 'womens', 'her', 'by',
       'the', 'a', 'an', 'edp', 'edt', 'ml', 'oz', 'fl', 'new', 'authentic',
       'genuine', 'sealed', '34', '100', 'ounce', 'fluid',
@@ -298,8 +317,21 @@ export async function scrapeBingShopping(query: string, brand?: string, whoisEna
 
   try {
     const seenSellers = new Set<string>();
-    const sellers = await scrapeOnePage(page, url, cleanedQuery, seenSellers, 40);
+    let sellers = await scrapeOnePage(page, url, cleanedQuery, seenSellers, 40);
     console.log(`[Bing Shopping] Found ${sellers.length} sellers`);
+
+    // Nothing matched — the query is likely over-specified (house brand + a
+    // concentration suffix stores drop). Retry once with a looser query.
+    if (sellers.length === 0) {
+      const simplified = simplifyQuery(cleanedQuery, brand);
+      if (simplified && simplified.toLowerCase() !== cleanedQuery.toLowerCase()) {
+        const retryUrl = `https://www.bing.com/shop?q=${encodeURIComponent(simplified)}&FORM=SHOPTB`;
+        console.log(`[Bing Shopping] 0 results — retrying simplified "${simplified}": ${retryUrl}`);
+        seenSellers.clear();
+        sellers = await scrapeOnePage(page, retryUrl, simplified, seenSellers, 40);
+        console.log(`[Bing Shopping] Retry found ${sellers.length} sellers`);
+      }
+    }
 
     // Compute median price across all results for price-sanity scoring
     const referencePrice = computeReferencePrice(sellers.map(s => s.price));
