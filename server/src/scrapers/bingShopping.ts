@@ -1,8 +1,9 @@
 import type { Page } from 'playwright';
 import { getSharedBrowser } from './browser';
 import type { ScrapedSeller } from '../types';
-import { scoreSellerTrust, computeReferencePrice } from './trustScorer';
+import { scoreSellerTrust, computeReferencePrice, isAuthorizedRetailer } from './trustScorer';
 import { getDomainAgeDays } from './whoisLookup';
+import { resolveListings } from './listingResolver';
 
 // Known seller names (used to build a scoreable URL)
 const SELLER_DOMAINS = new Map<string, string>([
@@ -113,6 +114,41 @@ function simplifyQuery(fullQuery: string, brand?: string): string {
     .replace(/\s+(extrait\s+de\s+parfum|eau\s+de\s+parfum|eau\s+de\s+toilette|extrait|parfum|cologne|edp|edt)\s*$/i, '')
     .trim();
   return simplified;
+}
+
+// Generic words dropped when deriving a fragrance's distinctive tokens (Node-side
+// twin of the in-page GENERIC set, without the size numbers).
+const GENERIC_MATCH_TOKENS = new Set([
+  'eau', 'de', 'toilette', 'parfum', 'extrait', 'cologne', 'fragrance', 'perfume',
+  'spray', 'for', 'men', 'mens', 'women', 'womens', 'unisex', 'by', 'the', 'edp', 'edt',
+  'ml', 'oz', 'fl', 'ounce', 'perfumes', 'parfums', 'fragrances',
+]);
+
+// The fragrance's own distinctive name tokens (brand prefix + generics stripped) —
+// e.g. "Maison Francis Kurkdjian Baccarat Rouge 540" → ["baccarat","rouge","540"].
+// Used to gate wave-2 enrichment: a resolved page must still name these, or its
+// data is a clone / a bot-block fallback and must not be trusted.
+function distinctiveNameTokens(query: string, brand?: string): string[] {
+  let namePart = query.trim();
+  if (brand) {
+    const brandLower = brand.trim().toLowerCase();
+    if (brandLower && namePart.toLowerCase().startsWith(brandLower + ' ')) {
+      namePart = namePart.slice(brand.trim().length).trim();
+    }
+  }
+  return namePart
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(word => word.length > 1 && !GENERIC_MATCH_TOKENS.has(word));
+}
+
+function resolvedNameMatches(resolvedName: string | null, tokens: string[]): boolean {
+  if (!resolvedName || tokens.length === 0) {
+    return false;
+  }
+  const lower = resolvedName.toLowerCase();
+  return tokens.every(token => lower.includes(token));
 }
 
 
@@ -335,19 +371,56 @@ export async function scrapeBingShopping(query: string, brand?: string, whoisEna
 
     // Compute median price across all results for price-sanity scoring
     const referencePrice = computeReferencePrice(sellers.map(s => s.price));
-    console.log(`[Bing Shopping] Reference price: $${referencePrice.toFixed(2)}`);
 
-    // Drop listings whose price is implausibly low vs the median.
-    // Floor = 30% of median, with a $20 absolute minimum to catch mislabeled
-    // sample/travel vials priced very cheaply but not labelled as such.
-    const priceFloor = Math.max(referencePrice * 0.30, 10);
-    const plausibleSellers = referencePrice > 0
+    // Anti-counterfeit floor. Two anchors, whichever is higher:
+    //  - Authorized-retailer median: what real premium/brand sellers charge. A
+    //    listing far below this is a clone/fake (e.g. a $23 "Baccarat Rouge 540"
+    //    against a ~$250 authorized median). This survives clone-dominated result
+    //    sets that would otherwise collapse the plain median and let fakes through.
+    //  - Plain all-listings median (with a $10 absolute minimum) — the fallback for
+    //    fragrances with no authorized sellers at all (e.g. clone-house exclusives),
+    //    so those still surface.
+    const trustedAnchor = computeReferencePrice(
+      sellers.filter(s => isAuthorizedRetailer(scoringUrlFor(s.href, s.name))).map(s => s.price),
+    );
+    const anchorFloor = trustedAnchor > 0 ? trustedAnchor * 0.30 : 0;
+    const medianFloor = referencePrice > 0 ? Math.max(referencePrice * 0.30, 10) : 0;
+    const priceFloor  = Math.max(anchorFloor, medianFloor);
+    console.log(`[Bing Shopping] Reference $${referencePrice.toFixed(2)} | trusted anchor $${trustedAnchor.toFixed(2)} | floor $${priceFloor.toFixed(2)}`);
+
+    const plausibleSellers = priceFloor > 0
       ? sellers.filter(s => {
           const p = parseFloat(s.price.replace(/[^0-9.]/g, ''));
           return isNaN(p) || p >= priceFloor;
         })
       : sellers;
     console.log(`[Bing Shopping] After price floor ($${priceFloor.toFixed(2)}): ${plausibleSellers.length} sellers`);
+
+    // Wave-2 enrichment (Stage 2): Bing truncates most sizes out of its cards. For
+    // the cheapest few unsized listings — the ones a user is most likely to click
+    // and most likely to be a mis-sized/clone "deal" — read the real size off the
+    // destination page. Only trust it when the page's own product name still names
+    // the fragrance (guards against clones and bot-block fallback pages). Capped +
+    // concurrency-bounded so it adds one short burst, and the result is cached.
+    const nameTokens = distinctiveNameTokens(cleanedQuery, brand);
+    const unsized = plausibleSellers
+      .filter(s => s.sizeOz == null)
+      .sort((a, b) =>
+        (parseFloat(a.price.replace(/[^0-9.]/g, '')) || Infinity) -
+        (parseFloat(b.price.replace(/[^0-9.]/g, '')) || Infinity))
+      .slice(0, 5);
+    if (unsized.length > 0) {
+      const resolved = await resolveListings(unsized.map(s => s.href), 5);
+      let filled = 0;
+      unsized.forEach((seller, index) => {
+        const listing = resolved[index];
+        if (listing.sizeOz != null && resolvedNameMatches(listing.productName, nameTokens)) {
+          seller.sizeOz = listing.sizeOz;
+          filled++;
+        }
+      });
+      console.log(`[Bing Shopping] Wave-2 resolved ${filled}/${unsized.length} unknown sizes from destination pages`);
+    }
 
     // Optionally enrich with domain age via RDAP/WHOIS (run in parallel, capped at 5s each).
     // Look up the REAL destination host, not a guess from the seller name.

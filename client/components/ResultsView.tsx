@@ -54,6 +54,9 @@ const CredibilityBadge: React.FC<{ score: number }> = ({ score }) => {
 
 const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack, pricesLoading = false }) => {
   const [showAllSellers, setShowAllSellers] = useState(false);
+  // Size filter: null = follow the adaptive default (most common size for this
+  // fragrance); 'all' or a specific oz value = the user's explicit override.
+  const [selectedSize, setSelectedSize] = useState<number | 'all' | null>(null);
   const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [isLocating, setIsLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
@@ -94,15 +97,38 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack, pricesLoading =
 
   const allSellers = data.onlineSellers || [];
 
-  // Standardize on the full 3.4oz (100ml) bottle by default. Keep listings whose
-  // size we couldn't read off Bing's truncated card (sizeOz == null) — they're
-  // shown labeled "size unverified" so breadth stays intact — and drop only the
-  // ones confirmed to be a different size (1.7oz, 50ml, testers, etc.). If that
-  // leaves nothing, fall back to everything rather than an empty page.
-  const isStandardOrUnknown = (s: Seller) =>
-    s.sizeOz == null || (s.sizeOz >= 3.2 && s.sizeOz <= 3.6);
-  const sizeFiltered = allSellers.filter(isStandardOrUnknown);
-  const sellers = sizeFiltered.length > 0 ? sizeFiltered : allSellers;
+  // Bucket sizes to 0.1oz so 100ml→3.4 and 70ml→2.4 group cleanly.
+  const bucketSize = (oz: number) => Math.round(oz * 10) / 10;
+  const formatOz = (oz: number) => `${oz % 1 === 0 ? oz : oz.toFixed(1)} oz`;
+
+  // Adaptive size handling: rather than assume every fragrance is 3.4oz (100ml) —
+  // MFK Baccarat is 2.4oz, many extraits are 1.2oz — default to the MOST COMMON
+  // size among this fragrance's own listings, so prices stay comparable without
+  // hiding legitimate bottles. The user can switch sizes or see all.
+  const sizeCounts = new Map<number, number>();
+  for (const seller of allSellers) {
+    if (seller.sizeOz != null) {
+      const bucket = bucketSize(seller.sizeOz);
+      sizeCounts.set(bucket, (sizeCounts.get(bucket) ?? 0) + 1);
+    }
+  }
+  const availableSizes = [...sizeCounts.keys()].sort((a, b) => b - a);
+  // Modal size = the default; ties break toward the larger (full) bottle.
+  let defaultSize: number | null = null;
+  let bestCount = -1;
+  for (const [size, count] of sizeCounts) {
+    if (count > bestCount || (count === bestCount && (defaultSize == null || size > defaultSize))) {
+      bestCount = count;
+      defaultSize = size;
+    }
+  }
+  const effectiveSize: number | 'all' | null = selectedSize ?? defaultSize;
+
+  // A specific size shows that size plus still-unknown listings (labeled), so
+  // enrichment gaps never hide breadth. 'all' (or no known sizes) shows everything.
+  const sellers = (effectiveSize == null || effectiveSize === 'all')
+    ? allSellers
+    : allSellers.filter(s => s.sizeOz == null || bucketSize(s.sizeOz) === effectiveSize);
 
   const prices = sellers
     .map(s => getPrice(s.price))
@@ -299,6 +325,28 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack, pricesLoading =
             )}
           </div>
 
+          {/* Adaptive size filter — defaults to this fragrance's most common size */}
+          {availableSizes.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 mb-8">
+              <span className="text-[10px] font-black text-amber-900/40 uppercase tracking-[0.2em] mr-1">Size</span>
+              <button
+                onClick={() => setSelectedSize('all')}
+                className={`px-4 py-2 rounded-full text-[11px] font-black uppercase tracking-widest border transition-all ${effectiveSize === 'all' ? 'bg-amber-900 text-white border-amber-900' : 'bg-white text-amber-900/70 border-amber-200 hover:border-amber-400'}`}
+              >
+                All
+              </button>
+              {availableSizes.map(size => (
+                <button
+                  key={size}
+                  onClick={() => setSelectedSize(size)}
+                  className={`px-4 py-2 rounded-full text-[11px] font-black uppercase tracking-widest border transition-all ${effectiveSize === size ? 'bg-amber-900 text-white border-amber-900' : 'bg-white text-amber-900/70 border-amber-200 hover:border-amber-400'}`}
+                >
+                  {formatOz(size)}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Prices still scraping — skeleton placeholders keep the layout stable */}
           {pricesLoading && sortedSellers.length === 0 && (
             <div className="grid gap-6 overflow-visible">
@@ -366,7 +414,9 @@ const ResultsView: React.FC<ResultsViewProps> = ({ data, onBack, pricesLoading =
                                 </span>
                               ) : null;
                             })()}
-                            {seller.sizeOz == null && (
+                            {seller.sizeOz != null ? (
+                              <span className="text-[9px] font-black text-amber-700 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-full uppercase tracking-widest">{formatOz(bucketSize(seller.sizeOz))}</span>
+                            ) : (
                               <span className="text-[9px] font-black text-amber-500 uppercase tracking-widest">Size unverified</span>
                             )}
                           </div>

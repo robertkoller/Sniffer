@@ -152,6 +152,20 @@ export function scoreSellerTrust(input: TrustInput): { score: number; isTrusted:
   return { score, isTrusted: score >= 80 };
 }
 
+// True only for authorized premium retailers and brand-owned stores — the sellers
+// whose price is a trustworthy anchor for what the genuine article costs.
+// Deliberately excludes the MARKETPLACES set (Amazon/eBay/Target/Costco/Groupon,
+// which carry third-party clones/fakes) and gray-market discounters. A lone low
+// anchor is tolerated because we take the median, not the minimum.
+export function isAuthorizedRetailer(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+    return PREMIUM_RETAILERS.has(hostname) || BRAND_SITES.has(hostname);
+  } catch {
+    return false;
+  }
+}
+
 // Compute the median price from a list of price strings
 export function computeReferencePrice(prices: string[]): number {
   const numeric = prices
